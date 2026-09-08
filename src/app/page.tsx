@@ -3,7 +3,13 @@
 import { useRef, useState, type DragEvent } from "react";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 
-type Status = "idle" | "uploading" | "creating" | "done" | "error";
+type Status =
+  | "idle"
+  | "uploading"
+  | "creating"
+  | "transcribing"
+  | "transcribed"
+  | "error";
 
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -78,12 +84,36 @@ export default function Home() {
       });
 
       if (!res.ok) throw new Error("Errore nella creazione del progetto");
+      const project = await res.json();
 
-      setStatus("done");
+      setStatus("transcribing");
+      await pollTranscription(project.id);
     } catch (err) {
       console.error(err);
       setError("Upload fallito. Riprova.");
       setStatus("error");
+    }
+  }
+
+  async function pollTranscription(projectId: number) {
+    const startRes = await fetch(`/api/projects/${projectId}/transcribe`, {
+      method: "POST",
+    });
+    if (!startRes.ok) throw new Error("Errore avvio trascrizione");
+
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const statusRes = await fetch(`/api/projects/${projectId}/transcribe`);
+      if (!statusRes.ok) throw new Error("Errore controllo trascrizione");
+      const data = await statusRes.json();
+
+      if (data.status === "completed") {
+        setStatus("transcribed");
+        return;
+      }
+      if (data.status === "error") {
+        throw new Error(data.error ?? "Trascrizione fallita");
+      }
     }
   }
 
@@ -156,10 +186,11 @@ export default function Home() {
             <span className="text-neutral-900 font-medium">
               {status === "uploading" && "Caricamento in corso..."}
               {status === "creating" && "Creazione progetto..."}
-              {status === "done" && "Caricato"}
+              {status === "transcribing" && "Trascrizione in corso..."}
+              {status === "transcribed" && "Trascrizione completata"}
             </span>
           </div>
-          {status === "uploading" && (
+          {(status === "uploading" || status === "transcribing") && (
             <div className="w-full h-2 rounded-full bg-neutral-100 overflow-hidden">
               <div className="h-full w-1/3 bg-neutral-900 animate-pulse rounded-full" />
             </div>

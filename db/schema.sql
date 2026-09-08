@@ -17,3 +17,6 @@ CREATE TABLE IF NOT EXISTS clips (
   video_url TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS transcript_job_id TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS transcript JSONB;
