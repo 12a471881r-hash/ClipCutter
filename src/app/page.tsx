@@ -9,7 +9,18 @@ type Status =
   | "creating"
   | "transcribing"
   | "transcribed"
+  | "analyzing"
+  | "analyzed"
   | "error";
+
+type Clip = {
+  id: number;
+  start_time: string;
+  end_time: string;
+  title: string | null;
+  hook: string | null;
+  score: number | null;
+};
 
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -41,6 +52,7 @@ export default function Home() {
   const [fileName, setFileName] = useState("");
   const [fileSize, setFileSize] = useState(0);
   const [duration, setDuration] = useState<number | null>(null);
+  const [clips, setClips] = useState<Clip[]>([]);
   const [error, setError] = useState("");
 
   async function handleFile(file: File) {
@@ -88,6 +100,15 @@ export default function Home() {
 
       setStatus("transcribing");
       await pollTranscription(project.id);
+
+      setStatus("analyzing");
+      const analyzeRes = await fetch(`/api/projects/${project.id}/analyze`, {
+        method: "POST",
+      });
+      if (!analyzeRes.ok) throw new Error("Errore nell'analisi AI");
+      const analyzeData = await analyzeRes.json();
+      setClips(analyzeData.clips ?? []);
+      setStatus("analyzed");
     } catch (err) {
       console.error(err);
       setError("Upload fallito. Riprova.");
@@ -188,11 +209,43 @@ export default function Home() {
               {status === "creating" && "Creazione progetto..."}
               {status === "transcribing" && "Trascrizione in corso..."}
               {status === "transcribed" && "Trascrizione completata"}
+              {status === "analyzing" && "Analisi AI in corso..."}
+              {status === "analyzed" && `${clips.length} clip selezionate`}
             </span>
           </div>
-          {(status === "uploading" || status === "transcribing") && (
+          {(status === "uploading" ||
+            status === "transcribing" ||
+            status === "analyzing") && (
             <div className="w-full h-2 rounded-full bg-neutral-100 overflow-hidden">
               <div className="h-full w-1/3 bg-neutral-900 animate-pulse rounded-full" />
+            </div>
+          )}
+          {status === "analyzed" && clips.length > 0 && (
+            <div className="pt-2 space-y-3">
+              {clips.map((clip) => (
+                <div
+                  key={clip.id}
+                  className="rounded-xl border border-neutral-200 p-4 space-y-1"
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="font-medium text-neutral-900">
+                      {clip.title ?? "Clip senza titolo"}
+                    </p>
+                    {clip.score !== null && (
+                      <span className="text-xs font-medium text-neutral-500">
+                        Score {clip.score}
+                      </span>
+                    )}
+                  </div>
+                  {clip.hook && (
+                    <p className="text-sm text-neutral-600">{clip.hook}</p>
+                  )}
+                  <p className="text-xs text-neutral-400">
+                    {formatDuration(Number(clip.start_time))} –{" "}
+                    {formatDuration(Number(clip.end_time))}
+                  </p>
+                </div>
+              ))}
             </div>
           )}
         </div>
