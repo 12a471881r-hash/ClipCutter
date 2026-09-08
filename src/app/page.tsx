@@ -4,7 +4,17 @@ import { useRef, useState, type DragEvent } from "react";
 import { useRouter } from "next/navigation";
 import { UploadCloud } from "lucide-react";
 import { uploadVideo } from "@/lib/uploadVideo";
+import {
+  compressVideoIfNeeded,
+  cancelCompression,
+  CompressionCancelledError,
+  type CompressionProgress,
+} from "@/lib/videoCompression";
 import { Button } from "@/components/ui/button";
+
+function formatMb(bytes: number) {
+  return `${(bytes / 1024 / 1024).toFixed(0)} MB`;
+}
 
 function FormatGlyph() {
   return (
@@ -23,6 +33,11 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
+  const [compressing, setCompressing] = useState(false);
+  const [compressPercent, setCompressPercent] = useState(0);
+  const [sizes, setSizes] = useState<{ original: number; compressed: number } | null>(
+    null
+  );
 
   async function handleFile(file: File) {
     if (!file.type.startsWith("video/")) {
@@ -30,29 +45,45 @@ export default function Home() {
       return;
     }
 
-    // Limite di sicurezza lato client. Con Supabase (free) sono 50 MB fissi;
-    // con Cloudflare R2 configurato si può alzare via NEXT_PUBLIC_MAX_UPLOAD_MB.
-    const maxMb = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? 50);
-    if (file.size > maxMb * 1024 * 1024) {
-      setError(
-        `Video troppo grande (${(file.size / 1024 / 1024).toFixed(0)} MB). ` +
-          `Il limite attuale è ${maxMb} MB — comprimi il video o riducine la durata.`
-      );
-      return;
+    setError("");
+    setSizes(null);
+    let fileToUpload = file;
+
+    if (file.size > 50 * 1024 * 1024) {
+      setCompressing(true);
+      setCompressPercent(0);
+      try {
+        const result = await compressVideoIfNeeded(file, (p: CompressionProgress) => {
+          setCompressPercent(p.percent);
+        });
+        fileToUpload = result.file;
+        if (result.wasCompressed) {
+          setSizes({ original: result.originalBytes, compressed: result.compressedBytes });
+        }
+      } catch (err) {
+        if (err instanceof CompressionCancelledError) {
+          setCompressing(false);
+          return;
+        }
+        console.error(err);
+        setError((err as Error).message);
+        setCompressing(false);
+        return;
+      }
+      setCompressing(false);
     }
 
-    setError("");
     setProgress(0);
     setUploading(true);
 
     try {
-      const publicUrl = await uploadVideo(file, setProgress);
+      const publicUrl = await uploadVideo(fileToUpload, setProgress);
 
       const res = await fetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          name: file.name,
+          name: fileToUpload.name,
           original_video_url: publicUrl,
         }),
       });
@@ -66,6 +97,11 @@ export default function Home() {
       setError("Upload fallito. Controlla la connessione e riprova.");
       setUploading(false);
     }
+  }
+
+  function handleCancelCompression() {
+    cancelCompression();
+    setCompressing(false);
   }
 
   function handleDrop(e: DragEvent<HTMLDivElement>) {
@@ -89,32 +125,46 @@ export default function Home() {
       <div
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
-        onClick={() => inputRef.current?.click()}
+        onClick={() => !uploading && !compressing && inputRef.current?.click()}
         className="w-full max-w-md flex flex-col items-center justify-center gap-5 rounded-2xl border border-dashed border-border bg-card px-8 py-14 text-center cursor-pointer transition-colors hover:border-accent/50"
       >
         <UploadCloud className="size-8 text-muted-foreground" strokeWidth={1.5} />
         <p className="text-sm text-muted-foreground">
-          {uploading
-            ? `Caricamento in corso... ${progress}%`
-            : "Trascina qui il tuo video"}
+          {compressing
+            ? `Ottimizzazione video... ${compressPercent}%`
+            : uploading
+              ? `Caricamento in corso... ${progress}%`
+              : "Trascina qui il tuo video"}
         </p>
-        {uploading && (
+        {sizes && !compressing && (
+          <p className="text-xs text-muted-foreground">
+            Video ottimizzato: {formatMb(sizes.original)} → {formatMb(sizes.compressed)} (
+            {Math.round((1 - sizes.compressed / sizes.original) * 100)}%)
+          </p>
+        )}
+        {(compressing || uploading) && (
           <div className="w-full h-1.5 rounded-full bg-foreground/10 overflow-hidden">
             <div
               className="h-full rounded-full bg-accent transition-all"
-              style={{ width: `${progress}%` }}
+              style={{ width: `${compressing ? compressPercent : progress}%` }}
             />
           </div>
         )}
-        <Button type="button" disabled={uploading}>
-          {uploading ? "Attendere..." : "Carica video"}
-        </Button>
+        {compressing ? (
+          <Button type="button" variant="outline" size="sm" onClick={handleCancelCompression}>
+            Annulla
+          </Button>
+        ) : (
+          <Button type="button" disabled={uploading}>
+            {uploading ? "Attendere..." : "Carica video"}
+          </Button>
+        )}
         <input
           ref={inputRef}
           type="file"
           accept="video/*"
           className="hidden"
-          disabled={uploading}
+          disabled={uploading || compressing}
           onChange={(e) => {
             const file = e.target.files?.[0];
             if (file) handleFile(file);
