@@ -9,7 +9,8 @@ Supabase (Postgres + Storage) · AssemblyAI (trascrizione) · Gemini
 
 ## Pipeline
 
-1. Upload del video → Supabase Storage, bucket `videos`
+1. Upload del video → Supabase Storage, bucket `videos` (resumable/TUS a
+   chunk di 6 MB, per reggere video lunghi e connessioni instabili)
 2. Creazione record in `projects`
 3. Trascrizione con AssemblyAI (word-level timestamps)
 4. Analisi con Gemini: seleziona 3-5 clip (start/end/title/hook/score)
@@ -38,8 +39,9 @@ Vedi `.env.example`. Servono:
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | chiave anon, usata dal client per l'upload |
 | `SUPABASE_SERVICE_ROLE_KEY` | usata lato server per l'upload delle clip renderizzate |
 | `ASSEMBLYAI_API_KEY` | trascrizione |
+| `ASSEMBLYAI_SPEECH_MODEL` | opzionale: `nano` per trascrizioni più veloci; vuoto = `best` |
 | `GEMINI_API_KEY` | analisi / selezione clip |
-| `GROQ_API_KEY` | opzionale: fallback analisi se Gemini è sovraccarico ([console.groq.com](https://console.groq.com)) |
+| `GROQ_API_KEY` | opzionale: se presente è il provider **primario** dell'analisi (più veloce/stabile di Gemini free); Gemini resta come fallback. [console.groq.com](https://console.groq.com) |
 
 ## Database
 

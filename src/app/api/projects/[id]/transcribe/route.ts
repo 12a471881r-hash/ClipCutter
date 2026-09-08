@@ -41,7 +41,14 @@ export async function POST(_req: NextRequest, { params }: Params) {
         authorization: apiKey,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ audio_url: project.original_video_url }),
+      body: JSON.stringify({
+        audio_url: project.original_video_url,
+        // "nano" è più veloce di "best"; default "best" se non impostato.
+        speech_model: process.env.ASSEMBLYAI_SPEECH_MODEL || undefined,
+        // Riconosce la lingua invece di assumere inglese (trascrizioni IT
+        // altrimenti inutilizzabili).
+        language_detection: true,
+      }),
     });
 
     const data = await res.json();
