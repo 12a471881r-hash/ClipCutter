@@ -52,37 +52,38 @@ export async function POST(_req: NextRequest, { params }: Params) {
       );
     }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "ANTHROPIC_API_KEY non configurata" },
+        { error: "GEMINI_API_KEY non configurata" },
         { status: 500 }
       );
     }
 
     const transcriptText = buildTimestampedTranscript(project.transcript.words);
 
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-5",
-        max_tokens: 2000,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: "user", content: transcriptText }],
-      }),
-    });
+    const res = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": apiKey,
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          contents: [{ parts: [{ text: transcriptText }] }],
+          generationConfig: { responseMimeType: "application/json" },
+        }),
+      }
+    );
 
     const data = await res.json();
     if (!res.ok) {
-      throw new Error(data.error?.message ?? "Errore nella richiesta a Claude");
+      throw new Error(data.error?.message ?? "Errore nella richiesta a Gemini");
     }
 
-    const rawText: string = data.content?.[0]?.text ?? "";
+    const rawText: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const cleaned = rawText.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(cleaned);
     const clips = parsed.clips ?? [];
