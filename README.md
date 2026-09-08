@@ -20,7 +20,7 @@ Supabase (Postgres + Storage) · AssemblyAI (trascrizione) · Gemini
 ## Setup locale
 
 ```bash
-nvm use            # Node 20 (vedi .nvmrc)
+nvm use            # Node 22 (vedi .nvmrc)
 npm install
 cp .env.example .env   # e compila i valori
 npm run db:migrate     # applica db/schema.sql
@@ -39,6 +39,7 @@ Vedi `.env.example`. Servono:
 | `SUPABASE_SERVICE_ROLE_KEY` | usata lato server per l'upload delle clip renderizzate |
 | `ASSEMBLYAI_API_KEY` | trascrizione |
 | `GEMINI_API_KEY` | analisi / selezione clip |
+| `GROQ_API_KEY` | opzionale: fallback analisi se Gemini è sovraccarico ([console.groq.com](https://console.groq.com)) |
 
 ## Database
 
@@ -62,13 +63,15 @@ Bucket `videos` **public**, con policy di `insert` per il ruolo `anon`
   il binario statico non va bundlato.
 - Le route `render` e `analyze` hanno `maxDuration = 60` (limite piano
   Hobby). Sul piano Pro si può alzare a 300.
-- Il render scarica il video sorgente in `/tmp` prima di passarlo a
-  FFmpeg (il binario statico va in crash leggendo da URL) e processa solo
-  la singola clip breve, mai il video intero.
+- Il render scarica il video sorgente in `/tmp` (in streaming) prima di
+  passarlo a FFmpeg (il binario statico va in crash leggendo da URL) e
+  processa solo la singola clip breve, mai il video intero. Sorgenti
+  oltre ~600 MB vengono rifiutati (limiti `/tmp` e memoria della function).
 
 ## Note
 
 - Gemini free tier a volte risponde "high demand" su tutti i modelli:
   non è un bug, riprovare. La route prova in sequenza
-  `gemini-3.6/3.7/3.8-flash` con attese 2s/5s/10s.
+  `gemini-3.6/3.7/3.8-flash` con attese 2s/5s/10s, poi — se `GROQ_API_KEY`
+  è configurata — ripiega su Groq (`llama-3.3-70b-versatile`, free tier).
 - Si usa Supabase Storage (non Vercel Blob) per un bug CORS lato Vercel Blob.

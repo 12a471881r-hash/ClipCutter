@@ -3,9 +3,16 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { pool } from "@/lib/db";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+
+// Oltre questa dimensione il video sorgente non entra nei limiti di /tmp
+// (512 MB) e della memoria della function su Vercel: meglio fermarsi con
+// un errore chiaro che far crashare il render.
+const MAX_SOURCE_BYTES = 600 * 1024 * 1024;
 
 const ffmpegPath = ffmpegInstaller.path;
 
@@ -101,14 +108,34 @@ export async function POST(_req: NextRequest, { params }: Params) {
 
     // Scarichiamo prima il video in locale: leggere direttamente da URL
     // manda in crash il binario ffmpeg statico bundled in alcuni ambienti.
+    // Lo scriviamo in streaming per non tenere l'intero file in memoria.
     const videoRes = await fetch(clip.project_video_url);
-    if (!videoRes.ok) {
+    if (!videoRes.ok || !videoRes.body) {
       throw new Error("Impossibile scaricare il video originale");
     }
-    fs.writeFileSync(inputPath, Buffer.from(await videoRes.arrayBuffer()));
+    const declaredSize = Number(videoRes.headers.get("content-length") ?? 0);
+    if (declaredSize > MAX_SOURCE_BYTES) {
+      return NextResponse.json(
+        { error: "Video originale troppo grande per il render su questo piano" },
+        { status: 413 }
+      );
+    }
+    await pipeline(
+      Readable.fromWeb(videoRes.body as Parameters<typeof Readable.fromWeb>[0]),
+      fs.createWriteStream(inputPath)
+    );
 
-    fs.writeFileSync(srtPath, buildSrt(words, startSec, endSec), "utf8");
-    const escapedSrt = srtPath.replace(/:/g, "\\:").replace(/'/g, "\\'");
+    // Se non ci sono parole nella finestra della clip, saltiamo del tutto il
+    // filtro subtitles: un SRT vuoto fa fallire ffmpeg.
+    const srt = buildSrt(words, startSec, endSec);
+    let vf = "crop=ih*9/16:ih,scale=1080:1920";
+    if (srt.trim()) {
+      fs.writeFileSync(srtPath, srt, "utf8");
+      const escapedSrt = srtPath.replace(/:/g, "\\:").replace(/'/g, "\\'");
+      vf += `,subtitles='${escapedSrt}':force_style='FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2'`;
+    } else {
+      srtPath = "";
+    }
 
     await runFfmpeg([
       "-y",
@@ -119,7 +146,7 @@ export async function POST(_req: NextRequest, { params }: Params) {
       "-t",
       String(duration),
       "-vf",
-      `crop=ih*9/16:ih,scale=1080:1920,subtitles='${escapedSrt}':force_style='FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2'`,
+      vf,
       "-c:v",
       "libx264",
       "-preset",
