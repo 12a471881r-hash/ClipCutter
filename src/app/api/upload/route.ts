@@ -15,6 +15,10 @@ export async function POST(request: Request): Promise<NextResponse> {
             "video/quicktime",
             "video/webm",
             "video/x-matroska",
+            "video/x-msvideo",
+            "video/mpeg",
+            "video/3gpp",
+            "video/ogg",
           ],
           maximumSizeInBytes: 2 * 1024 * 1024 * 1024, // 2GB
           addRandomSuffix: true,
@@ -27,6 +31,7 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     return NextResponse.json(jsonResponse);
   } catch (error) {
+    console.error("Errore generazione token upload:", error);
     return NextResponse.json(
       { error: (error as Error).message },
       { status: 400 }
