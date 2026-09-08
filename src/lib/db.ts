@@ -5,10 +5,14 @@ declare global {
   var pgPool: Pool | undefined;
 }
 
+const connectionString = process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
+const isLocal = connectionString?.includes("localhost") ?? false;
+
 export const pool =
   global.pgPool ??
   new Pool({
-    connectionString: process.env.DATABASE_URL,
+    connectionString,
+    ssl: isLocal ? undefined : { rejectUnauthorized: false },
   });
 
 if (process.env.NODE_ENV !== "production") {
