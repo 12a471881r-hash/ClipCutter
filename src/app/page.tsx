@@ -1,7 +1,7 @@
 "use client";
 
-import { upload } from "@vercel/blob/client";
 import { useRef, useState, type DragEvent } from "react";
+import { getSupabaseClient } from "@/lib/supabaseClient";
 
 type Status = "idle" | "uploading" | "creating" | "done" | "error";
 
@@ -32,7 +32,6 @@ function getVideoDuration(file: File): Promise<number> {
 export default function Home() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<Status>("idle");
-  const [progress, setProgress] = useState(0);
   const [fileName, setFileName] = useState("");
   const [fileSize, setFileSize] = useState(0);
   const [duration, setDuration] = useState<number | null>(null);
@@ -50,17 +49,22 @@ export default function Home() {
     setFileSize(file.size);
     setDuration(null);
     setStatus("uploading");
-    setProgress(0);
 
     try {
       const videoDuration = await getVideoDuration(file);
       setDuration(videoDuration);
 
-      const blob = await upload(file.name, file, {
-        access: "public",
-        handleUploadUrl: "/api/upload",
-        onUploadProgress: (event) => setProgress(event.percentage),
-      });
+      const filePath = `${Date.now()}-${file.name}`;
+      const supabase = getSupabaseClient();
+      const { error: uploadError } = await supabase.storage
+        .from("videos")
+        .upload(filePath, file, { cacheControl: "3600", upsert: false });
+
+      if (uploadError) throw uploadError;
+
+      const {
+        data: { publicUrl },
+      } = supabase.storage.from("videos").getPublicUrl(filePath);
 
       setStatus("creating");
 
@@ -69,7 +73,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: file.name,
-          original_video_url: blob.url,
+          original_video_url: publicUrl,
         }),
       });
 
@@ -150,17 +154,14 @@ export default function Home() {
           <div className="flex justify-between text-sm text-neutral-500">
             <span>Stato</span>
             <span className="text-neutral-900 font-medium">
-              {status === "uploading" && `Upload ${progress.toFixed(0)}%`}
+              {status === "uploading" && "Caricamento in corso..."}
               {status === "creating" && "Creazione progetto..."}
               {status === "done" && "Caricato"}
             </span>
           </div>
           {status === "uploading" && (
             <div className="w-full h-2 rounded-full bg-neutral-100 overflow-hidden">
-              <div
-                className="h-full bg-neutral-900 transition-all"
-                style={{ width: `${progress}%` }}
-              />
+              <div className="h-full w-1/3 bg-neutral-900 animate-pulse rounded-full" />
             </div>
           )}
         </div>
