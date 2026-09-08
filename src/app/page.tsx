@@ -4,6 +4,7 @@ import { useRef, useState, type DragEvent } from "react";
 import { useRouter } from "next/navigation";
 import { UploadCloud } from "lucide-react";
 import { getSupabaseClient } from "@/lib/supabaseClient";
+import { uploadResumable } from "@/lib/uploadResumable";
 import { Button } from "@/components/ui/button";
 
 function FormatGlyph() {
@@ -21,6 +22,7 @@ export default function Home() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
 
   async function handleFile(file: File) {
@@ -30,16 +32,26 @@ export default function Home() {
     }
 
     setError("");
+    setProgress(0);
     setUploading(true);
 
     try {
-      const filePath = `${Date.now()}-${file.name}`;
+      const filePath = `${Date.now()}-${file.name.replace(/[^\w.-]+/g, "_")}`;
       const supabase = getSupabaseClient();
-      const { error: uploadError } = await supabase.storage
-        .from("videos")
-        .upload(filePath, file, { cacheControl: "3600", upsert: false });
 
-      if (uploadError) throw uploadError;
+      // Upload resumable a chunk: regge i video lunghi e le connessioni
+      // instabili, dove l'upload in una richiesta unica falliva a metà.
+      // Fallback all'upload semplice se il resumable non è disponibile.
+      try {
+        await uploadResumable("videos", filePath, file, setProgress);
+      } catch (resumableErr) {
+        console.warn("Upload resumable fallito, provo quello semplice:", resumableErr);
+        setProgress(0);
+        const { error: uploadError } = await supabase.storage
+          .from("videos")
+          .upload(filePath, file, { cacheControl: "3600", upsert: true });
+        if (uploadError) throw uploadError;
+      }
 
       const {
         data: { publicUrl },
@@ -60,7 +72,7 @@ export default function Home() {
       router.push(`/project/${project.id}?autorun=1`);
     } catch (err) {
       console.error(err);
-      setError("Upload fallito. Riprova.");
+      setError("Upload fallito. Controlla la connessione e riprova.");
       setUploading(false);
     }
   }
@@ -91,8 +103,18 @@ export default function Home() {
       >
         <UploadCloud className="size-8 text-muted-foreground" strokeWidth={1.5} />
         <p className="text-sm text-muted-foreground">
-          {uploading ? "Caricamento in corso..." : "Trascina qui il tuo video"}
+          {uploading
+            ? `Caricamento in corso... ${progress}%`
+            : "Trascina qui il tuo video"}
         </p>
+        {uploading && (
+          <div className="w-full h-1.5 rounded-full bg-foreground/10 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-accent transition-all"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        )}
         <Button type="button" disabled={uploading}>
           {uploading ? "Attendere..." : "Carica video"}
         </Button>

@@ -54,7 +54,7 @@ export default function ProjectPage() {
     if (!startRes.ok) throw new Error("Errore avvio trascrizione");
 
     while (true) {
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 2000));
       const statusRes = await fetch(`/api/projects/${projectId}/transcribe`);
       if (!statusRes.ok) throw new Error("Errore controllo trascrizione");
       const data = await statusRes.json();

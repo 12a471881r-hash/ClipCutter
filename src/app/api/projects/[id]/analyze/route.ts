@@ -131,18 +131,20 @@ async function selectClips(
   const geminiKey = process.env.GEMINI_API_KEY;
   const groqKey = process.env.GROQ_API_KEY;
 
-  if (geminiKey) {
+  // Se Groq è configurato lo usiamo per primo: è più veloce e il suo free
+  // tier è più stabile di quello di Gemini (che va spesso in "high demand").
+  if (groqKey) {
     try {
-      return await callGemini(geminiKey, systemPrompt, userText);
+      return await callGroq(groqKey, systemPrompt, userText);
     } catch (err) {
-      console.error("Catena Gemini esaurita:", (err as Error).message);
-      if (!groqKey) throw err;
-      console.log("Passo al fallback Groq...");
+      console.error("Groq fallito:", (err as Error).message);
+      if (!geminiKey) throw err;
+      console.log("Passo a Gemini...");
     }
   }
 
-  if (groqKey) {
-    return await callGroq(groqKey, systemPrompt, userText);
+  if (geminiKey) {
+    return await callGemini(geminiKey, systemPrompt, userText);
   }
 
   throw new Error("Nessun provider AI configurato (GEMINI_API_KEY o GROQ_API_KEY)");
