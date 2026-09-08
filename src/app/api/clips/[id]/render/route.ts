@@ -3,11 +3,24 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { pool } from "@/lib/db";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
+// Oltre questa dimensione il video sorgente non entra nei limiti di /tmp
+// (512 MB) e della memoria della function su Vercel: meglio fermarsi con
+// un errore chiaro che far crashare il render.
+const MAX_SOURCE_BYTES = 600 * 1024 * 1024;
+
 const ffmpegPath = ffmpegInstaller.path;
+
+// Download del video + ffmpeg: operazione lunga. 60s è il massimo su Vercel
+// Hobby; alzare a 300 se il progetto passa al piano Pro.
+export const maxDuration = 60;
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 type Params = { params: Promise<{ id: string }> };
 type Word = { text: string; start: number; end: number };
@@ -25,7 +38,11 @@ function srtTime(ms: number): string {
 function buildSrt(words: Word[], startSec: number, endSec: number): string {
   const startMs = startSec * 1000;
   const endMs = endSec * 1000;
-  const relevant = words.filter((w) => w.start >= startMs && w.start < endMs);
+  // Include anche le parole a cavallo dei bordi della clip (overlap), non
+  // solo quelle che iniziano dentro la finestra.
+  const relevant = words.filter(
+    (w) => w.end > startMs && w.start < endMs && w.text?.trim()
+  );
 
   const CHUNK_SIZE = 6;
   const chunks: Word[][] = [];
@@ -35,9 +52,10 @@ function buildSrt(words: Word[], startSec: number, endSec: number): string {
 
   return chunks
     .map((chunk, i) => {
-      const start = chunk[0].start - startMs;
-      const end = chunk[chunk.length - 1].end - startMs;
-      const text = chunk.map((w) => w.text).join(" ");
+      // Clamp ai bordi della clip: niente timestamp negativi o oltre la durata.
+      const start = Math.max(0, chunk[0].start - startMs);
+      const end = Math.max(start + 1, chunk[chunk.length - 1].end - startMs);
+      const text = chunk.map((w) => w.text.trim()).join(" ");
       return `${i + 1}\n${srtTime(start)} --> ${srtTime(end)}\n${text}\n`;
     })
     .join("\n");
@@ -95,14 +113,37 @@ export async function POST(_req: NextRequest, { params }: Params) {
 
     // Scarichiamo prima il video in locale: leggere direttamente da URL
     // manda in crash il binario ffmpeg statico bundled in alcuni ambienti.
+    // Lo scriviamo in streaming per non tenere l'intero file in memoria.
     const videoRes = await fetch(clip.project_video_url);
-    if (!videoRes.ok) {
+    if (!videoRes.ok || !videoRes.body) {
       throw new Error("Impossibile scaricare il video originale");
     }
-    fs.writeFileSync(inputPath, Buffer.from(await videoRes.arrayBuffer()));
+    const declaredSize = Number(videoRes.headers.get("content-length") ?? 0);
+    if (declaredSize > MAX_SOURCE_BYTES) {
+      return NextResponse.json(
+        { error: "Video originale troppo grande per il render su questo piano" },
+        { status: 413 }
+      );
+    }
+    await pipeline(
+      Readable.fromWeb(videoRes.body as Parameters<typeof Readable.fromWeb>[0]),
+      fs.createWriteStream(inputPath)
+    );
 
-    fs.writeFileSync(srtPath, buildSrt(words, startSec, endSec), "utf8");
-    const escapedSrt = srtPath.replace(/:/g, "\\:").replace(/'/g, "\\'");
+    // Se non ci sono parole nella finestra della clip (clip su musica/intro,
+    // timestamp AI leggermente fuori range, ...) saltiamo del tutto il filtro
+    // subtitles: un SRT vuoto o assente fa fallire ffmpeg. Meglio una clip
+    // senza sottotitoli che un render fallito.
+    const srt = buildSrt(words, startSec, endSec);
+    let vf = "crop=ih*9/16:ih,scale=1080:1920";
+    if (srt.includes("-->")) {
+      fs.writeFileSync(srtPath, srt, "utf8");
+      const escapedSrt = srtPath.replace(/:/g, "\\:").replace(/'/g, "\\'");
+      vf += `,subtitles='${escapedSrt}':force_style='FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2'`;
+    } else {
+      console.warn(`Clip ${id}: nessuna parola nel range, render senza sottotitoli`);
+      srtPath = "";
+    }
 
     await runFfmpeg([
       "-y",
@@ -113,7 +154,7 @@ export async function POST(_req: NextRequest, { params }: Params) {
       "-t",
       String(duration),
       "-vf",
-      `crop=ih*9/16:ih,scale=1080:1920,subtitles='${escapedSrt}':force_style='FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2'`,
+      vf,
       "-c:v",
       "libx264",
       "-preset",

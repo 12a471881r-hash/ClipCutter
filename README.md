@@ -1,36 +1,77 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ClipAI
 
-## Getting Started
+MVP SaaS: carichi un video lungo, ottieni 3-5 clip verticali 9:16 con
+sottotitoli bruciati, pronte per Shorts / Reels / TikTok.
 
-First, run the development server:
+Stack: Next.js 16 (App Router, `src/`) · TypeScript · Tailwind v4 ·
+Supabase (Postgres + Storage) · AssemblyAI (trascrizione) · Gemini
+(selezione clip) · FFmpeg (render). Deploy su Vercel.
+
+## Pipeline
+
+1. Upload del video → Supabase Storage, bucket `videos`
+2. Creazione record in `projects`
+3. Trascrizione con AssemblyAI (word-level timestamps)
+4. Analisi con Gemini: seleziona 3-5 clip (start/end/title/hook/score)
+5. Render FFmpeg per clip: taglio, `crop=ih*9/16:ih,scale=1080:1920`,
+   sottotitoli da SRT (chunk di 6 parole), output 1080x1920 MP4 `+faststart`
+6. MP4 caricato su Storage, URL salvato in `clips.video_url`
+
+## Setup locale
 
 ```bash
+nvm use            # Node 22 (vedi .nvmrc)
+npm install
+cp .env.example .env   # e compila i valori
+npm run db:migrate     # applica db/schema.sql
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Variabili d'ambiente
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Vedi `.env.example`. Servono:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Variabile | Uso |
+| --- | --- |
+| `DATABASE_URL` (o `POSTGRES_URL`) | Postgres Supabase, connection string pooled (`:6543`) |
+| `NEXT_PUBLIC_SUPABASE_URL` | URL progetto Supabase |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | chiave anon, usata dal client per l'upload |
+| `SUPABASE_SERVICE_ROLE_KEY` | usata lato server per l'upload delle clip renderizzate |
+| `ASSEMBLYAI_API_KEY` | trascrizione |
+| `GEMINI_API_KEY` | analisi / selezione clip |
+| `GROQ_API_KEY` | opzionale: fallback analisi se Gemini è sovraccarico ([console.groq.com](https://console.groq.com)) |
 
-## Learn More
+## Database
 
-To learn more about Next.js, take a look at the following resources:
+Lo schema è in `db/schema.sql` (idempotente). `npm run db:migrate` lo
+applica via `scripts/migrate.js`. Ad ogni modifica dello schema va
+rieseguito lo stesso SQL sul progetto Supabase (SQL Editor).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Tabelle: `projects` (id, name, original_video_url, status, created_at,
+transcript_job_id, transcript) e `clips` (id, project_id, start_time,
+end_time, title, hook, score, video_url, created_at).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Storage
 
-## Deploy on Vercel
+Bucket `videos` **public**, con policy di `insert` per il ruolo `anon`
+(l'upload del video sorgente avviene dal browser con la chiave anon).
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Deploy su Vercel
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Tutte le env var sopra vanno configurate nel progetto Vercel.
+- `@ffmpeg-installer/ffmpeg` è in `serverExternalPackages` (`next.config.ts`):
+  il binario statico non va bundlato.
+- Le route `render` e `analyze` hanno `maxDuration = 60` (limite piano
+  Hobby). Sul piano Pro si può alzare a 300.
+- Il render scarica il video sorgente in `/tmp` (in streaming) prima di
+  passarlo a FFmpeg (il binario statico va in crash leggendo da URL) e
+  processa solo la singola clip breve, mai il video intero. Sorgenti
+  oltre ~600 MB vengono rifiutati (limiti `/tmp` e memoria della function).
+
+## Note
+
+- Gemini free tier a volte risponde "high demand" su tutti i modelli:
+  non è un bug, riprovare. La route prova in sequenza
+  `gemini-3.6/3.7/3.8-flash` con attese 2s/5s/10s, poi — se `GROQ_API_KEY`
+  è configurata — ripiega su Groq (`llama-3.3-70b-versatile`, free tier).
+- Si usa Supabase Storage (non Vercel Blob) per un bug CORS lato Vercel Blob.
