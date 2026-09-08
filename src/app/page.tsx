@@ -3,8 +3,7 @@
 import { useRef, useState, type DragEvent } from "react";
 import { useRouter } from "next/navigation";
 import { UploadCloud } from "lucide-react";
-import { getSupabaseClient } from "@/lib/supabaseClient";
-import { uploadResumable } from "@/lib/uploadResumable";
+import { uploadVideo } from "@/lib/uploadVideo";
 import { Button } from "@/components/ui/button";
 
 function FormatGlyph() {
@@ -31,8 +30,8 @@ export default function Home() {
       return;
     }
 
-    // Supabase Storage free tier: hard limit 50 MB per file. Meglio dirlo
-    // subito che far fallire l'upload a metà.
+    // Limite di sicurezza lato client. Con Supabase (free) sono 50 MB fissi;
+    // con Cloudflare R2 configurato si può alzare via NEXT_PUBLIC_MAX_UPLOAD_MB.
     const maxMb = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? 50);
     if (file.size > maxMb * 1024 * 1024) {
       setError(
@@ -47,26 +46,7 @@ export default function Home() {
     setUploading(true);
 
     try {
-      const filePath = `${Date.now()}-${file.name.replace(/[^\w.-]+/g, "_")}`;
-      const supabase = getSupabaseClient();
-
-      // Upload resumable a chunk: regge i video lunghi e le connessioni
-      // instabili, dove l'upload in una richiesta unica falliva a metà.
-      // Fallback all'upload semplice se il resumable non è disponibile.
-      try {
-        await uploadResumable("videos", filePath, file, setProgress);
-      } catch (resumableErr) {
-        console.warn("Upload resumable fallito, provo quello semplice:", resumableErr);
-        setProgress(0);
-        const { error: uploadError } = await supabase.storage
-          .from("videos")
-          .upload(filePath, file, { cacheControl: "3600", upsert: true });
-        if (uploadError) throw uploadError;
-      }
-
-      const {
-        data: { publicUrl },
-      } = supabase.storage.from("videos").getPublicUrl(filePath);
+      const publicUrl = await uploadVideo(file, setProgress);
 
       const res = await fetch("/api/projects", {
         method: "POST",
