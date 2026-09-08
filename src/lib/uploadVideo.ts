@@ -41,7 +41,7 @@ export async function uploadVideo(
   if (!res.ok) throw new Error("Impossibile ottenere l'URL di upload");
   const data = await res.json();
 
-  if (data.mode === "r2") {
+  if (data.mode === "s3") {
     await putWithProgress(data.uploadUrl, file, onProgress);
     return data.publicUrl as string;
   }
