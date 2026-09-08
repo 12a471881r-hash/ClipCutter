@@ -31,6 +31,17 @@ export default function Home() {
       return;
     }
 
+    // Supabase Storage free tier: hard limit 50 MB per file. Meglio dirlo
+    // subito che far fallire l'upload a metà.
+    const maxMb = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB ?? 50);
+    if (file.size > maxMb * 1024 * 1024) {
+      setError(
+        `Video troppo grande (${(file.size / 1024 / 1024).toFixed(0)} MB). ` +
+          `Il limite attuale è ${maxMb} MB — comprimi il video o riducine la durata.`
+      );
+      return;
+    }
+
     setError("");
     setProgress(0);
     setUploading(true);
