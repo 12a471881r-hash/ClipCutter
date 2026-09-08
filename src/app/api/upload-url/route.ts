@@ -1,16 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { getR2, R2_BUCKET, r2PublicUrl, isR2Configured } from "@/lib/r2";
+import {
+  getObjectStore,
+  OBJECT_STORE_BUCKET,
+  objectStorePublicUrl,
+  isObjectStoreConfigured,
+} from "@/lib/objectStore";
 
 export const dynamic = "force-dynamic";
 
 // Restituisce un URL PUT pre-firmato per caricare il video sorgente
-// direttamente dal browser su Cloudflare R2 (nessun limite 50 MB come
-// Supabase). Se R2 non è configurato, il client ripiega su Supabase.
+// direttamente dal browser su uno storage S3-compatibile (Backblaze B2,
+// Cloudflare R2, ...), senza il limite di 50 MB di Supabase. Se lo storage
+// non è configurato, il client ripiega su Supabase.
 export async function POST(req: NextRequest) {
   try {
-    if (!isR2Configured()) {
+    if (!isObjectStoreConfigured()) {
       return NextResponse.json({ mode: "supabase" });
     }
 
@@ -21,9 +27,9 @@ export async function POST(req: NextRequest) {
     const key = `videos/${Date.now()}-${safeName}`;
 
     const uploadUrl = await getSignedUrl(
-      getR2(),
+      getObjectStore(),
       new PutObjectCommand({
-        Bucket: R2_BUCKET,
+        Bucket: OBJECT_STORE_BUCKET,
         Key: key,
         ContentType: type || "video/mp4",
       }),
@@ -31,9 +37,9 @@ export async function POST(req: NextRequest) {
     );
 
     return NextResponse.json({
-      mode: "r2",
+      mode: "s3",
       uploadUrl,
-      publicUrl: r2PublicUrl(key),
+      publicUrl: objectStorePublicUrl(key),
     });
   } catch (error) {
     console.error("Errore POST /api/upload-url:", error);
