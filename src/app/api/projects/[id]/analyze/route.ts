@@ -91,6 +91,63 @@ async function callGemini(
   throw lastError;
 }
 
+// Fallback gratuito quando Gemini è sovraccarico su tutti i modelli: Groq
+// ha un free tier generoso, API compatibile OpenAI e supporta output JSON.
+// Usato solo se GROQ_API_KEY è configurata.
+async function callGroq(
+  apiKey: string,
+  systemPrompt: string,
+  userText: string
+): Promise<{ text: string; modelUsed: string }> {
+  const model = "llama-3.3-70b-versatile";
+  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userText },
+      ],
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error?.message ?? `Errore Groq (${model})`);
+  }
+  const text = data.choices?.[0]?.message?.content ?? "";
+  if (!text) throw new Error(`Risposta vuota da Groq (${model})`);
+  return { text, modelUsed: `groq/${model}` };
+}
+
+async function selectClips(
+  systemPrompt: string,
+  userText: string
+): Promise<{ text: string; modelUsed: string }> {
+  const geminiKey = process.env.GEMINI_API_KEY;
+  const groqKey = process.env.GROQ_API_KEY;
+
+  if (geminiKey) {
+    try {
+      return await callGemini(geminiKey, systemPrompt, userText);
+    } catch (err) {
+      console.error("Catena Gemini esaurita:", (err as Error).message);
+      if (!groqKey) throw err;
+      console.log("Passo al fallback Groq...");
+    }
+  }
+
+  if (groqKey) {
+    return await callGroq(groqKey, systemPrompt, userText);
+  }
+
+  throw new Error("Nessun provider AI configurato (GEMINI_API_KEY o GROQ_API_KEY)");
+}
+
 export async function POST(_req: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
@@ -111,18 +168,16 @@ export async function POST(_req: NextRequest, { params }: Params) {
       );
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
+    if (!process.env.GEMINI_API_KEY && !process.env.GROQ_API_KEY) {
       return NextResponse.json(
-        { error: "GEMINI_API_KEY non configurata" },
+        { error: "Nessun provider AI configurato (GEMINI_API_KEY o GROQ_API_KEY)" },
         { status: 500 }
       );
     }
 
     const transcriptText = buildTimestampedTranscript(project.transcript.words);
 
-    const { text: rawText, modelUsed } = await callGemini(
-      apiKey,
+    const { text: rawText, modelUsed } = await selectClips(
       SYSTEM_PROMPT,
       transcriptText
     );
