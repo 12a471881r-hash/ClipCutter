@@ -32,6 +32,50 @@ function buildTimestampedTranscript(words: Word[]): string {
   return result.trim();
 }
 
+// Provati in ordine: se un modello è dismesso, sovraccarico o va in errore,
+// si passa automaticamente al successivo.
+const GEMINI_MODELS = ["gemini-flash-latest", "gemini-3.6-flash", "gemini-2.5-flash"];
+
+async function callGemini(
+  apiKey: string,
+  systemPrompt: string,
+  userText: string
+): Promise<{ text: string; modelUsed: string }> {
+  let lastError: Error = new Error("Nessun modello Gemini disponibile");
+
+  for (const model of GEMINI_MODELS) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-goog-api-key": apiKey,
+          },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ parts: [{ text: userText }] }],
+            generationConfig: { responseMimeType: "application/json" },
+          }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error?.message ?? `Errore modello ${model}`);
+      }
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+      if (!text) throw new Error(`Risposta vuota dal modello ${model}`);
+      return { text, modelUsed: model };
+    } catch (err) {
+      lastError = err as Error;
+      console.error(`Gemini (${model}) fallito, provo il successivo:`, lastError.message);
+    }
+  }
+
+  throw lastError;
+}
+
 export async function POST(_req: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
@@ -62,28 +106,13 @@ export async function POST(_req: NextRequest, { params }: Params) {
 
     const transcriptText = buildTimestampedTranscript(project.transcript.words);
 
-    const res = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-goog-api-key": apiKey,
-        },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: [{ parts: [{ text: transcriptText }] }],
-          generationConfig: { responseMimeType: "application/json" },
-        }),
-      }
+    const { text: rawText, modelUsed } = await callGemini(
+      apiKey,
+      SYSTEM_PROMPT,
+      transcriptText
     );
+    console.log(`Analisi completata con modello: ${modelUsed}`);
 
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error?.message ?? "Errore nella richiesta a Gemini");
-    }
-
-    const rawText: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const cleaned = rawText.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(cleaned);
     const clips = parsed.clips ?? [];
