@@ -1,7 +1,11 @@
 "use client";
 
 import { useRef, useState, type DragEvent } from "react";
+import { UploadCloud } from "lucide-react";
 import { getSupabaseClient } from "@/lib/supabaseClient";
+import { Button } from "@/components/ui/button";
+import { Card, CardRow } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 
 type Status =
   | "idle"
@@ -47,6 +51,17 @@ function getVideoDuration(file: File): Promise<number> {
     videoEl.onerror = () => resolve(0);
     videoEl.src = URL.createObjectURL(file);
   });
+}
+
+function FormatGlyph() {
+  return (
+    <svg width="72" height="32" viewBox="0 0 72 32" fill="none" aria-hidden="true">
+      <rect x="0.5" y="6.5" width="27" height="19" rx="2" className="stroke-foreground/30" />
+      <path d="M33 16H41" className="stroke-accent" strokeWidth="1.5" strokeLinecap="round" />
+      <path d="M37 12.5L41 16L37 19.5" className="stroke-accent" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <rect x="47.5" y="0.5" width="15" height="31" rx="2" className="stroke-accent" strokeWidth="1.5" />
+    </svg>
+  );
 }
 
 export default function Home() {
@@ -168,16 +183,22 @@ export default function Home() {
   }
 
   const showDropzone = status === "idle" || status === "error";
+  const isBusy =
+    status === "uploading" ||
+    status === "transcribing" ||
+    status === "analyzing" ||
+    status === "rendering";
 
   return (
-    <main className="flex-1 flex flex-col items-center justify-center px-6 py-16 gap-10">
-      <div className="text-center space-y-3">
-        <span className="text-sm font-medium tracking-widest text-neutral-500 uppercase">
-          ClipAI
-        </span>
-        <h1 className="text-3xl sm:text-4xl font-semibold text-neutral-900">
-          Trasforma i tuoi video in Shorts automaticamente.
+    <main className="flex-1 flex flex-col items-center justify-center px-6 py-20 gap-8">
+      <div className="text-center space-y-4 max-w-md">
+        <FormatGlyph />
+        <h1 className="text-4xl font-semibold tracking-tight text-foreground text-balance">
+          I tuoi video, tagliati per i social.
         </h1>
+        <p className="text-muted-foreground text-balance">
+          Carica un video lungo. ClipAI trova i momenti migliori e li trasforma in clip verticali pronte da pubblicare.
+        </p>
       </div>
 
       {showDropzone ? (
@@ -185,12 +206,11 @@ export default function Home() {
           onDragOver={(e) => e.preventDefault()}
           onDrop={handleDrop}
           onClick={() => inputRef.current?.click()}
-          className="w-full max-w-xl flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed border-neutral-300 bg-neutral-50 px-8 py-16 text-center cursor-pointer transition-colors hover:border-neutral-400 hover:bg-neutral-100"
+          className="w-full max-w-md flex flex-col items-center justify-center gap-5 rounded-2xl border border-dashed border-border bg-card px-8 py-14 text-center cursor-pointer transition-colors hover:border-accent/50"
         >
-          <p className="text-neutral-600">Trascina qui il tuo video</p>
-          <span className="inline-flex items-center rounded-full bg-neutral-900 px-5 py-2.5 text-sm font-medium text-white">
-            Carica video
-          </span>
+          <UploadCloud className="size-8 text-muted-foreground" strokeWidth={1.5} />
+          <p className="text-sm text-muted-foreground">Trascina qui il tuo video</p>
+          <Button onClick={() => inputRef.current?.click()}>Carica video</Button>
           <input
             ref={inputRef}
             type="file"
@@ -204,30 +224,24 @@ export default function Home() {
           {error && <p className="text-sm text-red-600">{error}</p>}
         </div>
       ) : (
-        <div className="w-full max-w-xl rounded-2xl border border-neutral-200 bg-white px-8 py-10 space-y-4">
-          <div className="flex justify-between text-sm text-neutral-500">
-            <span>Nome file</span>
-            <span className="text-neutral-900 font-medium truncate max-w-[60%]">
-              {fileName}
-            </span>
-          </div>
-          <div className="flex justify-between text-sm text-neutral-500">
-            <span>Dimensione</span>
-            <span className="text-neutral-900 font-medium">
-              {formatBytes(fileSize)}
-            </span>
-          </div>
+        <Card className="w-full max-w-md px-7 py-8 space-y-5">
+          <CardRow>
+            <span className="text-muted-foreground">Nome file</span>
+            <span className="font-medium truncate max-w-[60%]">{fileName}</span>
+          </CardRow>
+          <CardRow>
+            <span className="text-muted-foreground">Dimensione</span>
+            <span className="font-medium">{formatBytes(fileSize)}</span>
+          </CardRow>
           {duration !== null && duration > 0 && (
-            <div className="flex justify-between text-sm text-neutral-500">
-              <span>Durata</span>
-              <span className="text-neutral-900 font-medium">
-                {formatDuration(duration)}
-              </span>
-            </div>
+            <CardRow>
+              <span className="text-muted-foreground">Durata</span>
+              <span className="font-medium">{formatDuration(duration)}</span>
+            </CardRow>
           )}
-          <div className="flex justify-between text-sm text-neutral-500">
-            <span>Stato</span>
-            <span className="text-neutral-900 font-medium">
+          <CardRow>
+            <span className="text-muted-foreground">Stato</span>
+            <span className="font-medium">
               {status === "uploading" && "Caricamento in corso..."}
               {status === "creating" && "Creazione progetto..."}
               {status === "transcribing" && "Trascrizione in corso..."}
@@ -238,38 +252,28 @@ export default function Home() {
                 `Generazione clip ${renderIndex}/${clips.length}...`}
               {status === "completed" && "Completato"}
             </span>
-          </div>
-          {(status === "uploading" ||
-            status === "transcribing" ||
-            status === "analyzing" ||
-            status === "rendering") && (
-            <div className="w-full h-2 rounded-full bg-neutral-100 overflow-hidden">
-              <div className="h-full w-1/3 bg-neutral-900 animate-pulse rounded-full" />
-            </div>
-          )}
+          </CardRow>
+
+          {isBusy && <Progress indeterminate />}
+
           {(status === "rendering" || status === "completed") &&
             clips.length > 0 && (
-              <div className="pt-2 space-y-3">
+              <div className="pt-1 space-y-3">
                 {clips.map((clip) => (
-                  <div
-                    key={clip.id}
-                    className="rounded-xl border border-neutral-200 p-4 space-y-1"
-                  >
+                  <Card key={clip.id} className="p-4 space-y-1">
                     <div className="flex items-center justify-between">
-                      <p className="font-medium text-neutral-900">
-                        {clip.title ?? "Clip senza titolo"}
-                      </p>
+                      <p className="font-medium">{clip.title ?? "Clip senza titolo"}</p>
                       {clip.score !== null && (
-                        <span className="text-xs font-medium text-neutral-500">
-                          Score {clip.score}
+                        <span className="text-xs font-medium text-muted-foreground">
+                          {clip.score}
                         </span>
                       )}
                     </div>
                     {clip.hook && (
-                      <p className="text-sm text-neutral-600">{clip.hook}</p>
+                      <p className="text-sm text-muted-foreground">{clip.hook}</p>
                     )}
                     <div className="flex items-center justify-between pt-1">
-                      <p className="text-xs text-neutral-400">
+                      <p className="text-xs text-muted-foreground">
                         {formatDuration(Number(clip.start_time))} –{" "}
                         {formatDuration(Number(clip.end_time))}
                       </p>
@@ -277,21 +281,21 @@ export default function Home() {
                         <a
                           href={clip.video_url}
                           download
-                          className="text-xs font-medium text-neutral-900 underline"
+                          className="text-xs font-medium text-accent hover:underline"
                         >
                           Scarica
                         </a>
                       ) : (
-                        <span className="text-xs text-neutral-400">
+                        <span className="text-xs text-muted-foreground">
                           In lavorazione...
                         </span>
                       )}
                     </div>
-                  </div>
+                  </Card>
                 ))}
               </div>
             )}
-        </div>
+        </Card>
       )}
     </main>
   );
