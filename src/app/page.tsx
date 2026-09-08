@@ -11,6 +11,8 @@ type Status =
   | "transcribed"
   | "analyzing"
   | "analyzed"
+  | "rendering"
+  | "completed"
   | "error";
 
 type Clip = {
@@ -20,6 +22,7 @@ type Clip = {
   title: string | null;
   hook: string | null;
   score: number | null;
+  video_url?: string | null;
 };
 
 function formatBytes(bytes: number) {
@@ -53,6 +56,7 @@ export default function Home() {
   const [fileSize, setFileSize] = useState(0);
   const [duration, setDuration] = useState<number | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
+  const [renderIndex, setRenderIndex] = useState(0);
   const [error, setError] = useState("");
 
   async function handleFile(file: File) {
@@ -107,8 +111,27 @@ export default function Home() {
       });
       if (!analyzeRes.ok) throw new Error("Errore nell'analisi AI");
       const analyzeData = await analyzeRes.json();
-      setClips(analyzeData.clips ?? []);
-      setStatus("analyzed");
+      const selectedClips: Clip[] = analyzeData.clips ?? [];
+      setClips(selectedClips);
+      setStatus("rendering");
+
+      for (let i = 0; i < selectedClips.length; i++) {
+        setRenderIndex(i + 1);
+        try {
+          const renderRes = await fetch(`/api/clips/${selectedClips[i].id}/render`, {
+            method: "POST",
+          });
+          if (renderRes.ok) {
+            const renderData = await renderRes.json();
+            selectedClips[i] = { ...selectedClips[i], video_url: renderData.video_url };
+            setClips([...selectedClips]);
+          }
+        } catch (renderErr) {
+          console.error(renderErr);
+        }
+      }
+
+      setStatus("completed");
     } catch (err) {
       console.error(err);
       setError("Upload fallito. Riprova.");
@@ -211,43 +234,63 @@ export default function Home() {
               {status === "transcribed" && "Trascrizione completata"}
               {status === "analyzing" && "Analisi AI in corso..."}
               {status === "analyzed" && `${clips.length} clip selezionate`}
+              {status === "rendering" &&
+                `Generazione clip ${renderIndex}/${clips.length}...`}
+              {status === "completed" && "Completato"}
             </span>
           </div>
           {(status === "uploading" ||
             status === "transcribing" ||
-            status === "analyzing") && (
+            status === "analyzing" ||
+            status === "rendering") && (
             <div className="w-full h-2 rounded-full bg-neutral-100 overflow-hidden">
               <div className="h-full w-1/3 bg-neutral-900 animate-pulse rounded-full" />
             </div>
           )}
-          {status === "analyzed" && clips.length > 0 && (
-            <div className="pt-2 space-y-3">
-              {clips.map((clip) => (
-                <div
-                  key={clip.id}
-                  className="rounded-xl border border-neutral-200 p-4 space-y-1"
-                >
-                  <div className="flex items-center justify-between">
-                    <p className="font-medium text-neutral-900">
-                      {clip.title ?? "Clip senza titolo"}
-                    </p>
-                    {clip.score !== null && (
-                      <span className="text-xs font-medium text-neutral-500">
-                        Score {clip.score}
-                      </span>
+          {(status === "rendering" || status === "completed") &&
+            clips.length > 0 && (
+              <div className="pt-2 space-y-3">
+                {clips.map((clip) => (
+                  <div
+                    key={clip.id}
+                    className="rounded-xl border border-neutral-200 p-4 space-y-1"
+                  >
+                    <div className="flex items-center justify-between">
+                      <p className="font-medium text-neutral-900">
+                        {clip.title ?? "Clip senza titolo"}
+                      </p>
+                      {clip.score !== null && (
+                        <span className="text-xs font-medium text-neutral-500">
+                          Score {clip.score}
+                        </span>
+                      )}
+                    </div>
+                    {clip.hook && (
+                      <p className="text-sm text-neutral-600">{clip.hook}</p>
                     )}
+                    <div className="flex items-center justify-between pt-1">
+                      <p className="text-xs text-neutral-400">
+                        {formatDuration(Number(clip.start_time))} –{" "}
+                        {formatDuration(Number(clip.end_time))}
+                      </p>
+                      {clip.video_url ? (
+                        <a
+                          href={clip.video_url}
+                          download
+                          className="text-xs font-medium text-neutral-900 underline"
+                        >
+                          Scarica
+                        </a>
+                      ) : (
+                        <span className="text-xs text-neutral-400">
+                          In lavorazione...
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  {clip.hook && (
-                    <p className="text-sm text-neutral-600">{clip.hook}</p>
-                  )}
-                  <p className="text-xs text-neutral-400">
-                    {formatDuration(Number(clip.start_time))} –{" "}
-                    {formatDuration(Number(clip.end_time))}
-                  </p>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
         </div>
       )}
     </main>
