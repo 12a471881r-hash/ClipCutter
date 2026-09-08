@@ -38,7 +38,11 @@ function srtTime(ms: number): string {
 function buildSrt(words: Word[], startSec: number, endSec: number): string {
   const startMs = startSec * 1000;
   const endMs = endSec * 1000;
-  const relevant = words.filter((w) => w.start >= startMs && w.start < endMs);
+  // Include anche le parole a cavallo dei bordi della clip (overlap), non
+  // solo quelle che iniziano dentro la finestra.
+  const relevant = words.filter(
+    (w) => w.end > startMs && w.start < endMs && w.text?.trim()
+  );
 
   const CHUNK_SIZE = 6;
   const chunks: Word[][] = [];
@@ -48,9 +52,10 @@ function buildSrt(words: Word[], startSec: number, endSec: number): string {
 
   return chunks
     .map((chunk, i) => {
-      const start = chunk[0].start - startMs;
-      const end = chunk[chunk.length - 1].end - startMs;
-      const text = chunk.map((w) => w.text).join(" ");
+      // Clamp ai bordi della clip: niente timestamp negativi o oltre la durata.
+      const start = Math.max(0, chunk[0].start - startMs);
+      const end = Math.max(start + 1, chunk[chunk.length - 1].end - startMs);
+      const text = chunk.map((w) => w.text.trim()).join(" ");
       return `${i + 1}\n${srtTime(start)} --> ${srtTime(end)}\n${text}\n`;
     })
     .join("\n");
@@ -125,15 +130,18 @@ export async function POST(_req: NextRequest, { params }: Params) {
       fs.createWriteStream(inputPath)
     );
 
-    // Se non ci sono parole nella finestra della clip, saltiamo del tutto il
-    // filtro subtitles: un SRT vuoto fa fallire ffmpeg.
+    // Se non ci sono parole nella finestra della clip (clip su musica/intro,
+    // timestamp AI leggermente fuori range, ...) saltiamo del tutto il filtro
+    // subtitles: un SRT vuoto o assente fa fallire ffmpeg. Meglio una clip
+    // senza sottotitoli che un render fallito.
     const srt = buildSrt(words, startSec, endSec);
     let vf = "crop=ih*9/16:ih,scale=1080:1920";
-    if (srt.trim()) {
+    if (srt.includes("-->")) {
       fs.writeFileSync(srtPath, srt, "utf8");
       const escapedSrt = srtPath.replace(/:/g, "\\:").replace(/'/g, "\\'");
       vf += `,subtitles='${escapedSrt}':force_style='FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2'`;
     } else {
+      console.warn(`Clip ${id}: nessuna parola nel range, render senza sottotitoli`);
       srtPath = "";
     }
 
