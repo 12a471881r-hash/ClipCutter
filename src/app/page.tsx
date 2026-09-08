@@ -210,7 +210,7 @@ export default function Home() {
         >
           <UploadCloud className="size-8 text-muted-foreground" strokeWidth={1.5} />
           <p className="text-sm text-muted-foreground">Trascina qui il tuo video</p>
-          <Button onClick={() => inputRef.current?.click()}>Carica video</Button>
+          <Button type="button">Carica video</Button>
           <input
             ref={inputRef}
             type="file"
