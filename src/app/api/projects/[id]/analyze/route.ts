@@ -32,9 +32,11 @@ function buildTimestampedTranscript(words: Word[]): string {
   return result.trim();
 }
 
-// Provati in ordine: se un modello è dismesso, sovraccarico o va in errore,
-// si passa automaticamente al successivo.
-const GEMINI_MODELS = ["gemini-flash-latest", "gemini-3.6-flash", "gemini-2.5-flash"];
+// Provati in ordine, con attesa progressiva tra un tentativo e l'altro in
+// caso di sovraccarico (429 / "high demand"): modelli diversi hanno quote
+// separate, quindi passare al successivo spesso risolve da solo.
+const GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"];
+const RETRY_DELAYS_MS = [2000, 5000, 10000];
 
 async function callGemini(
   apiKey: string,
@@ -43,7 +45,8 @@ async function callGemini(
 ): Promise<{ text: string; modelUsed: string }> {
   let lastError: Error = new Error("Nessun modello Gemini disponibile");
 
-  for (const model of GEMINI_MODELS) {
+  for (let i = 0; i < GEMINI_MODELS.length; i++) {
+    const model = GEMINI_MODELS[i];
     try {
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -69,7 +72,14 @@ async function callGemini(
       return { text, modelUsed: model };
     } catch (err) {
       lastError = err as Error;
-      console.error(`Gemini (${model}) fallito, provo il successivo:`, lastError.message);
+      console.error(`Gemini (${model}) fallito:`, lastError.message);
+
+      const delay = RETRY_DELAYS_MS[i];
+      const hasNextModel = i < GEMINI_MODELS.length - 1;
+      if (delay && hasNextModel) {
+        console.log(`Attendo ${delay}ms prima del modello successivo...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
     }
   }
 
