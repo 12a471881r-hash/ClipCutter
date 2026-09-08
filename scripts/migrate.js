@@ -2,11 +2,24 @@ const { Pool } = require("pg");
 const fs = require("fs");
 const path = require("path");
 
-async function main() {
-  const connectionString =
+function resolveConnectionString() {
+  const raw =
     process.env.DATABASE_URL ??
     process.env.POSTGRES_URL_NON_POOLING ??
     process.env.POSTGRES_URL;
+  if (!raw) return raw;
+  try {
+    const url = new URL(raw);
+    url.searchParams.delete("sslmode");
+    url.searchParams.delete("supa");
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
+async function main() {
+  const connectionString = resolveConnectionString();
   const isLocal = connectionString?.includes("localhost") ?? false;
 
   const pool = new Pool({

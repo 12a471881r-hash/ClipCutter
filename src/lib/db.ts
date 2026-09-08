@@ -5,7 +5,23 @@ declare global {
   var pgPool: Pool | undefined;
 }
 
-const connectionString = process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
+function resolveConnectionString(): string | undefined {
+  const raw = process.env.DATABASE_URL ?? process.env.POSTGRES_URL;
+  if (!raw) return raw;
+  try {
+    const url = new URL(raw);
+    // Rimuoviamo sslmode dall'URL: decidiamo noi esplicitamente come gestire
+    // l'SSL sotto, evitando che pg-connection-string lo tratti come
+    // "verify-full" (causa errore self-signed certificate con Supabase).
+    url.searchParams.delete("sslmode");
+    url.searchParams.delete("supa");
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
+const connectionString = resolveConnectionString();
 const isLocal = connectionString?.includes("localhost") ?? false;
 
 export const pool =
