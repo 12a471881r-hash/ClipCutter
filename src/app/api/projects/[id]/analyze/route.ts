@@ -3,6 +3,11 @@ import { pool } from "@/lib/db";
 
 type Params = { params: Promise<{ id: string }> };
 
+// La catena di fallback Gemini può accumulare attese (2s + 5s + 10s) prima
+// di restituire un errore: serve margine oltre i 10s di default.
+export const maxDuration = 60;
+export const dynamic = "force-dynamic";
+
 type Word = { text: string; start: number; end: number };
 
 const SYSTEM_PROMPT = `Sei un editor esperto di video short-form. Riceverai la trascrizione di un video con marcatori di tempo nel formato [mm:ss].

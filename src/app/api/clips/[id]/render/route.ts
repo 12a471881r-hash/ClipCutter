@@ -9,6 +9,12 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 const ffmpegPath = ffmpegInstaller.path;
 
+// Download del video + ffmpeg: operazione lunga. 60s è il massimo su Vercel
+// Hobby; alzare a 300 se il progetto passa al piano Pro.
+export const maxDuration = 60;
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
 type Params = { params: Promise<{ id: string }> };
 type Word = { text: string; start: number; end: number };
 
