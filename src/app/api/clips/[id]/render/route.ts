@@ -14,6 +14,13 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 // un errore chiaro che far crashare il render.
 const MAX_SOURCE_BYTES = 600 * 1024 * 1024;
 
+// Fase 2 — Automatic Editing: soglie per la rimozione automatica delle pause
+// (basata sui vuoti tra parole nella trascrizione, nessuna analisi audio
+// extra necessaria) e limiti di sicurezza sul numero di sotto-segmenti.
+const MIN_PAUSE_MS = 900;
+const MIN_SUBSEGMENT_SEC = 1.5;
+const MAX_SUBSEGMENTS = 12;
+
 const ffmpegPath = ffmpegInstaller.path;
 
 // Download del video + ffmpeg: operazione lunga. 60s è il massimo su Vercel
@@ -24,6 +31,7 @@ export const runtime = "nodejs";
 
 type Params = { params: Promise<{ id: string }> };
 type Word = { text: string; start: number; end: number };
+type Segment = { start: number; end: number };
 
 function srtTime(ms: number): string {
   const h = Math.floor(ms / 3600000);
@@ -35,30 +43,106 @@ function srtTime(ms: number): string {
   ).padStart(2, "0")},${String(rem).padStart(3, "0")}`;
 }
 
-function buildSrt(words: Word[], startSec: number, endSec: number): string {
-  const startMs = startSec * 1000;
-  const endMs = endSec * 1000;
-  // Include anche le parole a cavallo dei bordi della clip (overlap), non
-  // solo quelle che iniziano dentro la finestra.
-  const relevant = words.filter(
-    (w) => w.end > startMs && w.start < endMs && w.text?.trim()
-  );
+// Divide un segmento nei punti dove la trascrizione mostra un vuoto tra
+// parole più lungo di MIN_PAUSE_MS (pausa/silenzio) — nessuna analisi audio
+// separata: riusa i timestamp già disponibili di AssemblyAI.
+function splitOnPauses(words: Word[], segment: Segment): Segment[] {
+  const startMs = segment.start * 1000;
+  const endMs = segment.end * 1000;
+  const relevant = words
+    .filter((w) => w.end > startMs && w.start < endMs)
+    .sort((a, b) => a.start - b.start);
 
+  if (relevant.length < 2) return [segment];
+
+  const parts: Segment[] = [];
+  let curStartSec = segment.start;
+
+  for (let i = 0; i < relevant.length - 1; i++) {
+    const gap = relevant[i + 1].start - relevant[i].end;
+    if (gap > MIN_PAUSE_MS) {
+      const cutSec = relevant[i].end / 1000;
+      if (cutSec - curStartSec >= MIN_SUBSEGMENT_SEC) {
+        parts.push({ start: curStartSec, end: cutSec });
+        curStartSec = relevant[i + 1].start / 1000;
+      }
+    }
+  }
+  parts.push({ start: curStartSec, end: segment.end });
+  return parts;
+}
+
+// Applica lo split-pause a tutti i segmenti scelti dall'AI e limita il
+// numero totale di pezzi (concat troppo frammentata rende il video a scatti
+// e allunga inutilmente il comando ffmpeg).
+function prepareSegments(words: Word[], segments: Segment[]): Segment[] {
+  let all = segments.flatMap((seg) => splitOnPauses(words, seg));
+  if (all.length > MAX_SUBSEGMENTS) {
+    // Se troppo frammentato, meglio rinunciare allo split-pause che avere
+    // un video irriconoscibile a scatti: torniamo ai segmenti originali.
+    all = segments;
+  }
+  return all;
+}
+
+// Sottotitoli remappati sulla timeline del video CONCATENATO (di uscita),
+// non su quella del video originale: ogni sotto-segmento shifta i propri
+// timestamp in base a quanto già "consumato" dai pezzi precedenti.
+function buildSrt(words: Word[], segments: Segment[]): string {
+  const entries: { startMs: number; endMs: number; text: string }[] = [];
+  let cumulativeMs = 0;
   const CHUNK_SIZE = 6;
-  const chunks: Word[][] = [];
-  for (let i = 0; i < relevant.length; i += CHUNK_SIZE) {
-    chunks.push(relevant.slice(i, i + CHUNK_SIZE));
+
+  for (const seg of segments) {
+    const segStartMs = seg.start * 1000;
+    const segEndMs = seg.end * 1000;
+    const relevant = words.filter(
+      (w) => w.end > segStartMs && w.start < segEndMs && w.text?.trim()
+    );
+
+    for (let i = 0; i < relevant.length; i += CHUNK_SIZE) {
+      const chunk = relevant.slice(i, i + CHUNK_SIZE);
+      const start = cumulativeMs + Math.max(0, chunk[0].start - segStartMs);
+      const end =
+        cumulativeMs + Math.max(start + 1, chunk[chunk.length - 1].end - segStartMs);
+      entries.push({ startMs: start, endMs: end, text: chunk.map((w) => w.text.trim()).join(" ") });
+    }
+    cumulativeMs += segEndMs - segStartMs;
   }
 
-  return chunks
-    .map((chunk, i) => {
-      // Clamp ai bordi della clip: niente timestamp negativi o oltre la durata.
-      const start = Math.max(0, chunk[0].start - startMs);
-      const end = Math.max(start + 1, chunk[chunk.length - 1].end - startMs);
-      const text = chunk.map((w) => w.text.trim()).join(" ");
-      return `${i + 1}\n${srtTime(start)} --> ${srtTime(end)}\n${text}\n`;
-    })
+  return entries
+    .map((e, i) => `${i + 1}\n${srtTime(e.startMs)} --> ${srtTime(e.endMs)}\n${e.text}\n`)
     .join("\n");
+}
+
+// Un -i per segmento (con -ss/-t propri) invece di un filtro trim unico:
+// così ogni pezzo usa il fast-seek nativo di ffmpeg anche se i segmenti
+// sono sparsi lontano tra loro nel video originale.
+function buildFfmpegArgs(
+  inputPath: string,
+  segments: Segment[],
+  vf: string,
+  outputPath: string
+): string[] {
+  const args: string[] = [];
+  for (const seg of segments) {
+    args.push("-ss", String(seg.start), "-t", String(Math.max(0.1, seg.end - seg.start)), "-i", inputPath);
+  }
+  const concatInputs = segments.map((_, i) => `[${i}:v][${i}:a]`).join("");
+  const filterComplex = `${concatInputs}concat=n=${segments.length}:v=1:a=1[vcat][acat];[vcat]${vf}[vout]`;
+
+  args.push(
+    "-filter_complex", filterComplex,
+    "-map", "[vout]",
+    "-map", "[acat]",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-c:a", "aac",
+    "-movflags", "+faststart",
+    "-y",
+    outputPath
+  );
+  return args;
 }
 
 function runFfmpeg(args: string[]): Promise<void> {
@@ -101,10 +185,15 @@ export async function POST(_req: NextRequest, { params }: Params) {
       );
     }
 
-    const startSec = Number(clip.start_time);
-    const endSec = Number(clip.end_time);
-    const duration = endSec - startSec;
     const words: Word[] = clip.project_transcript?.words ?? [];
+    // Retrocompatibilità: clip create prima della Fase 1 (senza colonna
+    // "segments" popolata) usano ancora start_time/end_time.
+    const baseSegments: Segment[] =
+      clip.segments && Array.isArray(clip.segments) && clip.segments.length > 0
+        ? clip.segments
+        : [{ start: Number(clip.start_time), end: Number(clip.end_time) }];
+
+    const segments = prepareSegments(words, baseSegments);
 
     const tmpDir = os.tmpdir();
     inputPath = path.join(tmpDir, `${id}-${Date.now()}-input.mp4`);
@@ -130,11 +219,10 @@ export async function POST(_req: NextRequest, { params }: Params) {
       fs.createWriteStream(inputPath)
     );
 
-    // Se non ci sono parole nella finestra della clip (clip su musica/intro,
-    // timestamp AI leggermente fuori range, ...) saltiamo del tutto il filtro
-    // subtitles: un SRT vuoto o assente fa fallire ffmpeg. Meglio una clip
-    // senza sottotitoli che un render fallito.
-    const srt = buildSrt(words, startSec, endSec);
+    // Se non ci sono parole nei segmenti (clip su musica/intro, timestamp AI
+    // leggermente fuori range, ...) saltiamo il filtro subtitles: un SRT
+    // vuoto fa fallire ffmpeg. Meglio una clip senza sottotitoli che niente.
+    const srt = buildSrt(words, segments);
     let vf = "crop=ih*9/16:ih,scale=1080:1920";
     if (srt.includes("-->")) {
       fs.writeFileSync(srtPath, srt, "utf8");
@@ -145,26 +233,7 @@ export async function POST(_req: NextRequest, { params }: Params) {
       srtPath = "";
     }
 
-    await runFfmpeg([
-      "-y",
-      "-ss",
-      String(startSec),
-      "-i",
-      inputPath,
-      "-t",
-      String(duration),
-      "-vf",
-      vf,
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-c:a",
-      "aac",
-      "-movflags",
-      "+faststart",
-      outputPath,
-    ]);
+    await runFfmpeg(buildFfmpegArgs(inputPath, segments, vf, outputPath));
 
     const fileBuffer = fs.readFileSync(outputPath);
     const supabaseAdmin = getSupabaseAdmin();
@@ -187,7 +256,7 @@ export async function POST(_req: NextRequest, { params }: Params) {
       id,
     ]);
 
-    return NextResponse.json({ video_url: publicUrl });
+    return NextResponse.json({ video_url: publicUrl, segments_used: segments.length });
   } catch (error) {
     console.error("Errore POST /api/clips/[id]/render:", error);
     return NextResponse.json(
