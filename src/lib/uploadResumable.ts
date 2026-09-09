@@ -1,7 +1,11 @@
 import * as tus from "tus-js-client";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
+// Le nuove chiavi "publishable" (sb_publishable_...) NON sono JWT: vanno solo
+// nell'header apikey. L'header Authorization richiede invece un JWT vero,
+// quindi qui serve ancora la vecchia SUPABASE_ANON_KEY (formato eyJ...).
+const PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
+const ANON_JWT = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 // Supabase impone chunk da esattamente 6 MB (tranne l'ultimo).
 const CHUNK_SIZE = 6 * 1024 * 1024;
@@ -25,7 +29,8 @@ export function uploadResumable(
       endpoint: `${SUPABASE_URL}/storage/v1/upload/resumable`,
       retryDelays: [0, 1000, 3000, 5000, 10000],
       headers: {
-        authorization: `Bearer ${ANON_KEY}`,
+        authorization: `Bearer ${ANON_JWT}`,
+        apikey: PUBLISHABLE_KEY,
         "x-upsert": "true",
       },
       uploadDataDuringCreation: true,
