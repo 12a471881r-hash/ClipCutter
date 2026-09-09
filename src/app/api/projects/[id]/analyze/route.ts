@@ -10,16 +10,24 @@ export const dynamic = "force-dynamic";
 
 type Word = { text: string; start: number; end: number };
 
-const SYSTEM_PROMPT = `Sei un editor esperto di video short-form. Riceverai la trascrizione di un video con marcatori di tempo nel formato [mm:ss].
+const SYSTEM_PROMPT = `Sei un editor esperto di video short-form virali. Riceverai la trascrizione di un video con marcatori di tempo nel formato [mm:ss].
 
-Analizza il contenuto e seleziona da 3 a 5 estratti (clip) adatti a diventare video verticali brevi (Shorts/Reels/TikTok).
+Il tuo compito non è tagliare intervalli a caso, ma capire il significato del discorso e trovare 3-5 estratti che funzionino come video verticali brevi (Shorts/Reels/TikTok).
 
-Privilegia: informazioni utili, momenti sorprendenti, storytelling, opinioni forti, curiosità, frasi ad alto potenziale di engagement.
-Evita: introduzioni inutili, pause, ripetizioni, parti senza contesto, segmenti troppo brevi.
-Ogni clip deve durare tra 20 e 60 secondi.
+Per ogni clip, segui la struttura HOOK → CONTEXT → PAYOFF:
+- HOOK: le primissime parole devono catturare l'attenzione (domanda, affermazione forte, curiosità).
+- CONTEXT: il minimo necessario per capire la situazione.
+- PAYOFF: la conclusione, la rivelazione, la battuta, l'insight — il motivo per cui vale guardare fino alla fine.
+
+Regole:
+- Ogni clip deve avere inizio e fine su un confine naturale di frase: non iniziare né finire a metà di un pensiero o con contesto mancante.
+- Se ha senso, una clip può essere composta da PIÙ segmenti non consecutivi del video (es. una domanda posta a minuto 2 e la sua risposta a minuto 8): usali solo quando uniti insieme creano un racconto più forte, non di default.
+- Privilegia: informazioni utili, momenti sorprendenti, storytelling, opinioni forti, curiosità, frasi ad alto potenziale di engagement.
+- Evita: introduzioni inutili, pause, ripetizioni, segmenti troppo brevi o senza contesto.
+- Ogni clip deve durare tra 20 e 60 secondi in totale (somma dei segmenti).
 
 Rispondi SOLO con un oggetto JSON in questo formato esatto, senza testo aggiuntivo, markdown o spiegazioni:
-{"clips":[{"start":<secondi numero>,"end":<secondi numero>,"title":"...","hook":"...","score":<0-100 numero>}]}`;
+{"clips":[{"segments":[{"start":<secondi numero>,"end":<secondi numero>}],"title":"...","hook":"...","score":<0-100 numero>,"reasoning":"perché questa clip funziona, in una frase"}]}`;
 
 function buildTimestampedTranscript(words: Word[]): string {
   let result = "";
@@ -36,6 +44,37 @@ function buildTimestampedTranscript(words: Word[]): string {
   }
   return result.trim();
 }
+
+// Evita di tagliare a metà parola: sposta il confine proposto dall'AI
+// sull'inizio/fine della parola più vicina della trascrizione reale.
+function snapToWordBoundary(
+  words: Word[],
+  proposedStartSec: number,
+  proposedEndSec: number
+): { start: number; end: number } {
+  if (words.length === 0) return { start: proposedStartSec, end: proposedEndSec };
+
+  const startMs = proposedStartSec * 1000;
+  const endMs = proposedEndSec * 1000;
+
+  let snappedStartMs = words[0].start;
+  for (const w of words) {
+    if (w.start <= startMs) snappedStartMs = w.start;
+    else break;
+  }
+
+  let snappedEndMs = words[words.length - 1].end;
+  for (const w of words) {
+    if (w.end >= endMs) {
+      snappedEndMs = w.end;
+      break;
+    }
+  }
+
+  return { start: snappedStartMs / 1000, end: snappedEndMs / 1000 };
+}
+
+type ClipSegment = { start: number; end: number };
 
 // Provati in ordine, con attesa progressiva tra un tentativo e l'altro in
 // caso di sovraccarico (429 / "high demand"): modelli diversi hanno quote
@@ -193,10 +232,32 @@ export async function POST(_req: NextRequest, { params }: Params) {
 
     const saved = [];
     for (const clip of clips) {
+      // Supporta sia il nuovo formato {segments:[{start,end},...]} sia,
+      // per sicurezza, un eventuale vecchio formato piatto {start,end}.
+      const rawSegments: ClipSegment[] =
+        clip.segments ?? (clip.start !== undefined ? [{ start: clip.start, end: clip.end }] : []);
+
+      if (rawSegments.length === 0) continue;
+
+      const snapped = rawSegments.map((seg) =>
+        snapToWordBoundary(project.transcript.words, seg.start, seg.end)
+      );
+      const envelopeStart = Math.min(...snapped.map((s) => s.start));
+      const envelopeEnd = Math.max(...snapped.map((s) => s.end));
+
       const { rows: clipRows } = await pool.query(
-        `INSERT INTO clips (project_id, start_time, end_time, title, hook, score)
-         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-        [id, clip.start, clip.end, clip.title ?? null, clip.hook ?? null, clip.score ?? null]
+        `INSERT INTO clips (project_id, start_time, end_time, title, hook, score, segments, reasoning)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [
+          id,
+          envelopeStart,
+          envelopeEnd,
+          clip.title ?? null,
+          clip.hook ?? null,
+          clip.score ?? null,
+          JSON.stringify(snapped),
+          clip.reasoning ?? null,
+        ]
       );
       saved.push(clipRows[0]);
     }
