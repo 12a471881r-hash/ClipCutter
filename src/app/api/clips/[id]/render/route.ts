@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { pool } from "@/lib/db";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { buildAss, hasCaptionableWords, CAPTION_STYLES, type CaptionStyle } from "@/lib/captions";
 
 // Oltre questa dimensione il video sorgente non entra nei limiti di /tmp
 // (512 MB) e della memoria della function su Vercel: meglio fermarsi con
@@ -32,16 +33,6 @@ export const runtime = "nodejs";
 type Params = { params: Promise<{ id: string }> };
 type Word = { text: string; start: number; end: number };
 type Segment = { start: number; end: number };
-
-function srtTime(ms: number): string {
-  const h = Math.floor(ms / 3600000);
-  const m = Math.floor((ms % 3600000) / 60000);
-  const s = Math.floor((ms % 60000) / 1000);
-  const rem = Math.floor(ms % 1000);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(
-    s
-  ).padStart(2, "0")},${String(rem).padStart(3, "0")}`;
-}
 
 // Divide un segmento nei punti dove la trascrizione mostra un vuoto tra
 // parole più lungo di MIN_PAUSE_MS (pausa/silenzio) — nessuna analisi audio
@@ -83,36 +74,6 @@ function prepareSegments(words: Word[], segments: Segment[]): Segment[] {
     all = segments;
   }
   return all;
-}
-
-// Sottotitoli remappati sulla timeline del video CONCATENATO (di uscita),
-// non su quella del video originale: ogni sotto-segmento shifta i propri
-// timestamp in base a quanto già "consumato" dai pezzi precedenti.
-function buildSrt(words: Word[], segments: Segment[]): string {
-  const entries: { startMs: number; endMs: number; text: string }[] = [];
-  let cumulativeMs = 0;
-  const CHUNK_SIZE = 6;
-
-  for (const seg of segments) {
-    const segStartMs = seg.start * 1000;
-    const segEndMs = seg.end * 1000;
-    const relevant = words.filter(
-      (w) => w.end > segStartMs && w.start < segEndMs && w.text?.trim()
-    );
-
-    for (let i = 0; i < relevant.length; i += CHUNK_SIZE) {
-      const chunk = relevant.slice(i, i + CHUNK_SIZE);
-      const start = cumulativeMs + Math.max(0, chunk[0].start - segStartMs);
-      const end =
-        cumulativeMs + Math.max(start + 1, chunk[chunk.length - 1].end - segStartMs);
-      entries.push({ startMs: start, endMs: end, text: chunk.map((w) => w.text.trim()).join(" ") });
-    }
-    cumulativeMs += segEndMs - segStartMs;
-  }
-
-  return entries
-    .map((e, i) => `${i + 1}\n${srtTime(e.startMs)} --> ${srtTime(e.endMs)}\n${e.text}\n`)
-    .join("\n");
 }
 
 // Un -i per segmento (con -ss/-t propri) invece di un filtro trim unico:
@@ -158,13 +119,23 @@ function runFfmpeg(args: string[]): Promise<void> {
   });
 }
 
-export async function POST(_req: NextRequest, { params }: Params) {
-  let srtPath = "";
+export async function POST(req: NextRequest, { params }: Params) {
+  let assPath = "";
   let outputPath = "";
   let inputPath = "";
 
   try {
     const { id } = await params;
+
+    let requestedStyle: CaptionStyle | null = null;
+    try {
+      const body = await req.json();
+      if (body?.caption_style && CAPTION_STYLES.includes(body.caption_style)) {
+        requestedStyle = body.caption_style;
+      }
+    } catch {
+      // corpo assente o non JSON: usiamo lo stile salvato sulla clip
+    }
 
     const { rows } = await pool.query(
       `SELECT clips.*, projects.original_video_url AS project_video_url,
@@ -185,6 +156,8 @@ export async function POST(_req: NextRequest, { params }: Params) {
       );
     }
 
+    const captionStyle: CaptionStyle = requestedStyle ?? clip.caption_style ?? "karaoke";
+
     const words: Word[] = clip.project_transcript?.words ?? [];
     // Retrocompatibilità: clip create prima della Fase 1 (senza colonna
     // "segments" popolata) usano ancora start_time/end_time.
@@ -197,7 +170,7 @@ export async function POST(_req: NextRequest, { params }: Params) {
 
     const tmpDir = os.tmpdir();
     inputPath = path.join(tmpDir, `${id}-${Date.now()}-input.mp4`);
-    srtPath = path.join(tmpDir, `${id}-${Date.now()}.srt`);
+    assPath = path.join(tmpDir, `${id}-${Date.now()}.ass`);
     outputPath = path.join(tmpDir, `${id}-${Date.now()}.mp4`);
 
     // Scarichiamo prima il video in locale: leggere direttamente da URL
@@ -220,17 +193,18 @@ export async function POST(_req: NextRequest, { params }: Params) {
     );
 
     // Se non ci sono parole nei segmenti (clip su musica/intro, timestamp AI
-    // leggermente fuori range, ...) saltiamo il filtro subtitles: un SRT
-    // vuoto fa fallire ffmpeg. Meglio una clip senza sottotitoli che niente.
-    const srt = buildSrt(words, segments);
+    // leggermente fuori range, ...) saltiamo il filtro subtitles: un file
+    // sottotitoli vuoto fa fallire ffmpeg. Meglio una clip senza sottotitoli
+    // che niente.
     let vf = "crop=ih*9/16:ih,scale=1080:1920";
-    if (srt.includes("-->")) {
-      fs.writeFileSync(srtPath, srt, "utf8");
-      const escapedSrt = srtPath.replace(/:/g, "\\:").replace(/'/g, "\\'");
-      vf += `,subtitles='${escapedSrt}':force_style='FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,BorderStyle=1,Outline=2'`;
+    if (hasCaptionableWords(words, segments)) {
+      const ass = buildAss(words, segments, captionStyle);
+      fs.writeFileSync(assPath, ass, "utf8");
+      const escapedAss = assPath.replace(/:/g, "\\:").replace(/'/g, "\\'");
+      vf += `,subtitles='${escapedAss}'`;
     } else {
       console.warn(`Clip ${id}: nessuna parola nel range, render senza sottotitoli`);
-      srtPath = "";
+      assPath = "";
     }
 
     await runFfmpeg(buildFfmpegArgs(inputPath, segments, vf, outputPath));
@@ -264,7 +238,7 @@ export async function POST(_req: NextRequest, { params }: Params) {
       { status: 500 }
     );
   } finally {
-    if (srtPath && fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
+    if (assPath && fs.existsSync(assPath)) fs.unlinkSync(assPath);
     if (outputPath && fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
     if (inputPath && fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
   }

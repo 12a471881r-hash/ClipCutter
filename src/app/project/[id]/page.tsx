@@ -38,6 +38,7 @@ export default function ProjectPage() {
   const [stage, setStage] = useState("");
   const [error, setError] = useState("");
   const [renderingClipId, setRenderingClipId] = useState<number | null>(null);
+  const [captionStyles, setCaptionStyles] = useState<Record<number, string>>({});
 
   const fetchProject = useCallback(async (): Promise<Project> => {
     const res = await fetch(`/api/projects/${projectId}`);
@@ -72,10 +73,14 @@ export default function ProjectPage() {
   }, [projectId]);
 
   const renderClip = useCallback(
-    async (clipId: number) => {
+    async (clipId: number, captionStyle?: string) => {
       setRenderingClipId(clipId);
       try {
-        const res = await fetch(`/api/clips/${clipId}/render`, { method: "POST" });
+        const res = await fetch(`/api/clips/${clipId}/render`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(captionStyle ? { caption_style: captionStyle } : {}),
+        });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(data.error ?? "Errore nella generazione della clip");
@@ -244,15 +249,29 @@ export default function ProjectPage() {
                   </a>
                 </div>
               ) : (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={renderingClipId === clip.id}
-                  onClick={() => renderClip(clip.id)}
-                >
-                  {renderingClipId === clip.id ? "Generazione..." : "Genera clip"}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <select
+                    className="text-xs border border-border rounded-md px-2 py-1.5 bg-card"
+                    value={captionStyles[clip.id] ?? "karaoke"}
+                    disabled={renderingClipId === clip.id}
+                    onChange={(e) =>
+                      setCaptionStyles((s) => ({ ...s, [clip.id]: e.target.value }))
+                    }
+                  >
+                    <option value="karaoke">Sottotitoli: Karaoke</option>
+                    <option value="pop">Sottotitoli: Pop</option>
+                    <option value="minimal">Sottotitoli: Minimal</option>
+                  </select>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={renderingClipId === clip.id}
+                    onClick={() => renderClip(clip.id, captionStyles[clip.id] ?? "karaoke")}
+                  >
+                    {renderingClipId === clip.id ? "Generazione..." : "Genera clip"}
+                  </Button>
+                </div>
               )}
             </Card>
           ))}
