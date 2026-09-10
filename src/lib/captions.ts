@@ -41,9 +41,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
 
 const STYLE_LINES: Record<CaptionStyle, string> = {
-  karaoke: `Style: Cap,Arial Black,64,${ACCENT_ASS},${WHITE_ASS},${BLACK_ASS},${BLACK_ASS},-1,0,0,0,100,100,0,0,1,3,0,2,60,60,140,1`,
-  minimal: `Style: Cap,Arial,52,${WHITE_ASS},${WHITE_ASS},${BLACK_ASS},${BLACK_ASS},0,0,0,0,100,100,0,0,1,2,0,2,60,60,120,1`,
-  pop: `Style: Cap,Arial Black,84,${ACCENT_ASS},${ACCENT_ASS},${BLACK_ASS},${BLACK_ASS},-1,0,0,0,100,100,0,0,1,3,0,2,60,60,160,1`,
+  karaoke: `Style: Cap,Roboto,64,${ACCENT_ASS},${WHITE_ASS},${BLACK_ASS},${BLACK_ASS},-1,0,0,0,100,100,0,0,1,3,0,2,60,60,140,1`,
+  minimal: `Style: Cap,Roboto,52,${WHITE_ASS},${WHITE_ASS},${BLACK_ASS},${BLACK_ASS},0,0,0,0,100,100,0,0,1,2,0,2,60,60,120,1`,
+  pop: `Style: Cap,Anton,84,${ACCENT_ASS},${ACCENT_ASS},${BLACK_ASS},${BLACK_ASS},-1,0,0,0,100,100,0,0,1,3,0,2,60,60,160,1`,
 };
 
 // Raggruppa parole assegnando timestamp cumulativi sulla timeline del video

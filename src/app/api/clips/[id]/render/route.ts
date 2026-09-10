@@ -201,7 +201,9 @@ export async function POST(req: NextRequest, { params }: Params) {
       const ass = buildAss(words, segments, captionStyle);
       fs.writeFileSync(assPath, ass, "utf8");
       const escapedAss = assPath.replace(/:/g, "\\:").replace(/'/g, "\\'");
-      vf += `,subtitles='${escapedAss}'`;
+      const fontsDir = path.join(process.cwd(), "src", "assets", "fonts");
+      const escapedFontsDir = fontsDir.replace(/:/g, "\\:").replace(/'/g, "\\'");
+      vf += `,subtitles='${escapedAss}':fontsdir='${escapedFontsDir}'`;
     } else {
       console.warn(`Clip ${id}: nessuna parola nel range, render senza sottotitoli`);
       assPath = "";
