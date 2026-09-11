@@ -9,6 +9,8 @@ import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import { pool } from "@/lib/db";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { buildAss, hasCaptionableWords, CAPTION_STYLES, type CaptionStyle } from "@/lib/captions";
+import { buildEffectsFilterChain, type ClipEffect } from "@/lib/editingEffects";
+import { remapToOutputTime } from "@/lib/timeline";
 
 // Oltre questa dimensione il video sorgente non entra nei limiti di /tmp
 // (512 MB) e della memoria della function su Vercel: meglio fermarsi con
@@ -197,6 +199,20 @@ export async function POST(req: NextRequest, { params }: Params) {
     // sottotitoli vuoto fa fallire ffmpeg. Meglio una clip senza sottotitoli
     // che niente.
     let vf = "crop=ih*9/16:ih,scale=1080:1920";
+
+    // Fase 5 (Trend Editing): rimappiamo gli effetti (tempo assoluto nel
+    // video originale) sulla timeline di uscita concatenata, scartando
+    // quelli che ricadevano in parti poi tagliate via dallo split-pause.
+    const rawEffects: ClipEffect[] = Array.isArray(clip.effects) ? clip.effects : [];
+    const remappedEffects: ClipEffect[] = rawEffects
+      .map((e) => {
+        const remapped = remapToOutputTime(e.at, segments);
+        return remapped === null ? null : { type: e.type, at: remapped };
+      })
+      .filter((e): e is ClipEffect => e !== null);
+
+    const effectsChain = buildEffectsFilterChain(remappedEffects);
+    if (effectsChain) vf += `,${effectsChain}`;
     if (hasCaptionableWords(words, segments)) {
       const ass = buildAss(words, segments, captionStyle);
       fs.writeFileSync(assPath, ass, "utf8");

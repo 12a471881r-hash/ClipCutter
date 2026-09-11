@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { pool } from "@/lib/db";
+import { EFFECT_TYPES, type EffectType } from "@/lib/editingEffects";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -21,6 +22,12 @@ Per ogni clip, segui la struttura HOOK → CONTEXT → PAYOFF:
 
 IMPORTANTE sull'hook: il campo "hook" deve essere una frase PRESA LETTERALMENTE dalla trascrizione, corrispondente al primo segmento della clip. Non inventare mai una frase che non sia stata realmente detta nel video.
 
+EFFETTI (opzionale): puoi proporre da 0 a massimo 4 momenti in cui un piccolo effetto visivo rafforzerebbe la clip. Tipi disponibili:
+- "punch_zoom": leggero push-in su un momento di rilievo o una rivelazione.
+- "pattern_interrupt": scatto più marcato per riprendere l'attenzione dopo un tratto piatto.
+- "subtle_zoom": zoom lento e impercettibile su un'inquadratura statica lunga.
+Usali solo dove il contenuto lo giustifica davvero — una clip può benissimo non averne nessuno. "at" deve essere un istante (in secondi, tempo ASSOLUTO nel video originale) che ricade dentro uno dei segmenti scelti per la clip.
+
 Regole:
 - Ogni clip deve avere inizio e fine su un confine naturale di frase: non iniziare né finire a metà di un pensiero o con contesto mancante.
 - L'ordine dei segmenti nell'array NON deve essere per forza cronologico: usalo per mettere l'hook più forte per primo quando aiuta la clip.
@@ -30,7 +37,7 @@ Regole:
 - Ogni clip deve durare tra 20 e 60 secondi in totale (somma dei segmenti).
 
 Rispondi SOLO con un oggetto JSON in questo formato esatto, senza testo aggiuntivo, markdown o spiegazioni:
-{"clips":[{"segments":[{"start":<secondi numero>,"end":<secondi numero>}],"title":"...","hook":"...","score":<0-100 numero>,"reasoning":"perché questa clip funziona, in una frase"}]}`;
+{"clips":[{"segments":[{"start":<secondi numero>,"end":<secondi numero>}],"title":"...","hook":"...","score":<0-100 numero>,"reasoning":"perché questa clip funziona, in una frase","effects":[{"type":"punch_zoom","at":<secondi numero>}]}]}`;
 
 function buildTimestampedTranscript(words: Word[]): string {
   let result = "";
@@ -283,9 +290,21 @@ export async function POST(_req: NextRequest, { params }: Params) {
       const envelopeEnd = Math.max(...snapped.map((s) => s.end));
       const groundedHook = groundHook(clip.hook ?? null, project.transcript.words, snapped[0]);
 
+      // Teniamo solo effetti di tipo valido il cui "at" ricade davvero
+      // dentro uno dei segmenti scelti (altrimenti sarebbe un effetto su
+      // una parte di video che la clip non contiene nemmeno).
+      const validEffects = (Array.isArray(clip.effects) ? clip.effects : [])
+        .filter(
+          (e: { type?: string; at?: number }) =>
+            EFFECT_TYPES.includes(e.type as EffectType) &&
+            typeof e.at === "number" &&
+            snapped.some((seg) => e.at! >= seg.start && e.at! <= seg.end)
+        )
+        .slice(0, 4);
+
       const { rows: clipRows } = await pool.query(
-        `INSERT INTO clips (project_id, start_time, end_time, title, hook, score, segments, reasoning)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        `INSERT INTO clips (project_id, start_time, end_time, title, hook, score, segments, reasoning, effects)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
         [
           id,
           envelopeStart,
@@ -295,6 +314,7 @@ export async function POST(_req: NextRequest, { params }: Params) {
           clip.score ?? null,
           JSON.stringify(snapped),
           clip.reasoning ?? null,
+          JSON.stringify(validEffects),
         ]
       );
       saved.push(clipRows[0]);
