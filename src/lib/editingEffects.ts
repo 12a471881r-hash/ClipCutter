@@ -25,13 +25,16 @@ const EFFECT_CONFIG: Record<EffectType, EffectConfig> = {
 const MAX_EFFECTS_PER_CLIP = 4;
 
 function zoomExpr(atSec: number, cfg: EffectConfig): string {
-  const start = (atSec - cfg.halfWidth).toFixed(2);
-  const peak = atSec.toFixed(2);
-  const end = (atSec + cfg.halfWidth).toFixed(2);
-  const zoom = (cfg.peakZoom - 1).toFixed(3);
-  const half = cfg.halfWidth;
-
-  return `1+${zoom}*if(lt(t,${start}),0,if(lt(t,${peak}),(t-${start})/${half},if(lt(t,${end}),(${end}-t)/${half},0)))`;
+  // Impulso triangolare costruito SENZA nessuna funzione con virgola interna
+  // (né max(), né if()): dentro -filter_complex la virgola separa i filtri
+  // in catena e può creare ambiguità di parsing anche tra apici. Usiamo solo
+  // abs() (un argomento) per ottenere max(0,x) come (x+abs(x))/2.
+  const at = atSec.toFixed(2);
+  const hw = cfg.halfWidth;
+  const peak = (cfg.peakZoom - 1).toFixed(3);
+  const x = `(1-abs(t-${at})/${hw})`;
+  const positiveX = `((${x}+abs(${x}))/2)`;
+  return `(1+${peak}*${positiveX})`;
 }
 /**
  * Costruisce la catena di filtri ffmpeg (scale+crop) per gli effetti dati.
