@@ -25,11 +25,13 @@ const EFFECT_CONFIG: Record<EffectType, EffectConfig> = {
 const MAX_EFFECTS_PER_CLIP = 4;
 
 function zoomExpr(atSec: number, cfg: EffectConfig): string {
-  // Impulso triangolare senza max(), per evitare problemi di parsing FFmpeg.
-  const x = `1-abs(t-${atSec.toFixed(2)})/${cfg.halfWidth}`;
-  const positiveX = `((${x})+abs(${x}))/2`;
+  const start = (atSec - cfg.halfWidth).toFixed(2);
+  const peak = atSec.toFixed(2);
+  const end = (atSec + cfg.halfWidth).toFixed(2);
+  const zoom = (cfg.peakZoom - 1).toFixed(3);
+  const half = cfg.halfWidth;
 
-  return `(1+${(cfg.peakZoom - 1).toFixed(3)}*${positiveX})`;
+  return `1+${zoom}*if(lt(t,${start}),0,if(lt(t,${peak}),(t-${start})/${half},if(lt(t,${end}),(${end}-t)/${half},0)))`;
 }
 /**
  * Costruisce la catena di filtri ffmpeg (scale+crop) per gli effetti dati.
