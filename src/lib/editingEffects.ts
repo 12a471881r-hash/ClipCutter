@@ -27,7 +27,7 @@ const MAX_EFFECTS_PER_CLIP = 4;
 function zoomExpr(atSec: number, cfg: EffectConfig): string {
   // Impulso triangolare: 1 (nessuno zoom) fuori dalla finestra, sale fino a
   // peakZoom esattamente al centro (atSec).
-  return `(1+${(cfg.peakZoom - 1).toFixed(3)}*max(0,1-abs(t-${atSec.toFixed(2)})/${cfg.halfWidth}))`;
+  return `(1+${(cfg.peakZoom - 1).toFixed(3)}*max(0\\,1-abs(t-${atSec.toFixed(2)})/${cfg.halfWidth}))`;
 }
 
 /**
