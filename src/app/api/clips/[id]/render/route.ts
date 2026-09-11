@@ -121,6 +121,22 @@ function runFfmpeg(args: string[]): Promise<void> {
   });
 }
 
+// Fase 7 (Quality Enhancement): risoluzione originale via "ffmpeg -i" (stampa
+// sempre le info dello stream in stderr) — evitiamo di aggiungere ffprobe
+// come dipendenza separata solo per questo.
+function probeResolution(filePath: string): Promise<{ width: number; height: number } | null> {
+  return new Promise((resolve) => {
+    const proc = spawn(ffmpegPath, ["-i", filePath]);
+    let stderr = "";
+    proc.stderr.on("data", (d) => (stderr += d.toString()));
+    proc.on("close", () => {
+      const match = stderr.match(/Video:.*?(\d{2,5})x(\d{2,5})/);
+      resolve(match ? { width: Number(match[1]), height: Number(match[2]) } : null);
+    });
+    proc.on("error", () => resolve(null));
+  });
+}
+
 export async function POST(req: NextRequest, { params }: Params) {
   let assPath = "";
   let outputPath = "";
@@ -194,11 +210,21 @@ export async function POST(req: NextRequest, { params }: Params) {
       fs.createWriteStream(inputPath)
     );
 
+    // Fase 7 (Quality Enhancement): scaling di qualità (lanczos) + lieve
+    // sharpening SOLO quando il sorgente è sotto i 1920px di altezza, cioè
+    // quando stiamo davvero facendo un upscale verso 1080x1920. Se il
+    // sorgente è già in risoluzione pari o superiore, nessuna elaborazione
+    // extra: darebbe solo più tempo di render senza alcun beneficio reale.
+    const resolution = await probeResolution(inputPath);
+    const needsUpscale = resolution !== null && resolution.height < 1920;
+    const scaleFlags = needsUpscale ? ":flags=lanczos" : "";
+    const enhanceFilter = needsUpscale ? ",unsharp=5:5:0.8:5:5:0.0" : "";
+
     // Se non ci sono parole nei segmenti (clip su musica/intro, timestamp AI
     // leggermente fuori range, ...) saltiamo il filtro subtitles: un file
     // sottotitoli vuoto fa fallire ffmpeg. Meglio una clip senza sottotitoli
     // che niente.
-    let vf = "crop=ih*9/16:ih,scale=1080:1920";
+    let vf = `crop=ih*9/16:ih,scale=1080:1920${scaleFlags}${enhanceFilter}`;
 
     // Fase 5 (Trend Editing): rimappiamo gli effetti (tempo assoluto nel
     // video originale) sulla timeline di uscita concatenata, scartando
