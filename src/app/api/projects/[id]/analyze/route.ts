@@ -28,6 +28,13 @@ EFFETTI (opzionale): puoi proporre da 0 a massimo 4 momenti in cui un piccolo ef
 - "subtle_zoom": zoom lento e impercettibile su un'inquadratura statica lunga.
 Usali solo dove il contenuto lo giustifica davvero — una clip può benissimo non averne nessuno. "at" deve essere un istante (in secondi, tempo ASSOLUTO nel video originale) che ricade dentro uno dei segmenti scelti per la clip.
 
+LOOP (opzionale): dopo aver scelto i segmenti, valuta se il finale della clip può ricollegarsi naturalmente all'inizio, così che ripetendola (come fanno in automatico TikTok/Reels) sembri un loop voluto e non un taglio brusco. Collegamenti validi:
+- continuità di frase (il finale porta naturalmente a rileggere l'inizio come continuazione)
+- domanda → risposta → ritorno alla domanda
+- frase finale che richiama semanticamente l'inizio
+- struttura circolare naturale del discorso
+NON forzare un loop se peggiora il contenuto: in quel caso enabled=false, type="none". "startSegment" ed "endSegment" devono essere frasi PRESE LETTERALMENTE dalla trascrizione (mai inventate), quelle su cui si basa il collegamento.
+
 Regole:
 - Ogni clip deve avere inizio e fine su un confine naturale di frase: non iniziare né finire a metà di un pensiero o con contesto mancante.
 - L'ordine dei segmenti nell'array NON deve essere per forza cronologico: usalo per mettere l'hook più forte per primo quando aiuta la clip.
@@ -37,7 +44,7 @@ Regole:
 - Ogni clip deve durare tra 20 e 60 secondi in totale (somma dei segmenti).
 
 Rispondi SOLO con un oggetto JSON in questo formato esatto, senza testo aggiuntivo, markdown o spiegazioni:
-{"clips":[{"segments":[{"start":<secondi numero>,"end":<secondi numero>}],"title":"...","hook":"...","score":<0-100 numero>,"reasoning":"perché questa clip funziona, in una frase","effects":[{"type":"punch_zoom","at":<secondi numero>}]}]}`;
+{"clips":[{"segments":[{"start":<secondi numero>,"end":<secondi numero>}],"title":"...","hook":"...","score":<0-100 numero>,"reasoning":"perché questa clip funziona, in una frase","effects":[{"type":"punch_zoom","at":<secondi numero>}],"loop":{"enabled":true/false,"loopScore":<0-100 numero>,"type":"semantic|sentence|question_answer|none","reason":"...","startSegment":"...","endSegment":"..."}}]}`;
 
 function buildTimestampedTranscript(words: Word[]): string {
   let result = "";
@@ -290,6 +297,26 @@ export async function POST(_req: NextRequest, { params }: Params) {
       const envelopeEnd = Math.max(...snapped.map((s) => s.end));
       const groundedHook = groundHook(clip.hook ?? null, project.transcript.words, snapped[0]);
 
+      // Validazione del loop: type tra i 4 ammessi, score clampato 0-100,
+      // startSegment/endSegment verificati contro le parole vere (stesso
+      // controllo anti-invenzione già usato per l'hook) sul primo e ultimo
+      // segmento scelto. Se assente o malformato, niente loop.
+      const LOOP_TYPES = ["semantic", "sentence", "question_answer", "none"];
+      const rawLoop = clip.loop ?? {};
+      const loopType = LOOP_TYPES.includes(rawLoop.type) ? rawLoop.type : "none";
+      const loopData = {
+        enabled: Boolean(rawLoop.enabled) && loopType !== "none",
+        loopScore: Math.max(0, Math.min(100, Number(rawLoop.loopScore) || 0)),
+        type: loopType,
+        reason: typeof rawLoop.reason === "string" ? rawLoop.reason : null,
+        startSegment: groundHook(rawLoop.startSegment ?? null, project.transcript.words, snapped[0]),
+        endSegment: groundHook(
+          rawLoop.endSegment ?? null,
+          project.transcript.words,
+          snapped[snapped.length - 1]
+        ),
+      };
+
       // Teniamo solo effetti di tipo valido il cui "at" ricade davvero
       // dentro uno dei segmenti scelti (altrimenti sarebbe un effetto su
       // una parte di video che la clip non contiene nemmeno).
@@ -303,8 +330,8 @@ export async function POST(_req: NextRequest, { params }: Params) {
         .slice(0, 4);
 
       const { rows: clipRows } = await pool.query(
-        `INSERT INTO clips (project_id, start_time, end_time, title, hook, score, segments, reasoning, effects)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+        `INSERT INTO clips (project_id, start_time, end_time, title, hook, score, segments, reasoning, effects, loop)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
         [
           id,
           envelopeStart,
@@ -315,6 +342,7 @@ export async function POST(_req: NextRequest, { params }: Params) {
           JSON.stringify(snapped),
           clip.reasoning ?? null,
           JSON.stringify(validEffects),
+          JSON.stringify(loopData),
         ]
       );
       saved.push(clipRows[0]);
