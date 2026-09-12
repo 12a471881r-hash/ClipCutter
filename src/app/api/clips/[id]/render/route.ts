@@ -137,6 +137,23 @@ function probeResolution(filePath: string): Promise<{ width: number; height: num
   });
 }
 
+// Fase 5 (Trend Editing) — fix: il filtro "zoompan" usato per gli effetti
+// lavora per numero di frame, non per secondi: serve il framerate reale del
+// sorgente per convertire correttamente i tempi. Stessa tecnica di probe
+// (via stderr di "ffmpeg -i"), nessuna dipendenza nuova.
+function probeFps(filePath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const proc = spawn(ffmpegPath, ["-i", filePath]);
+    let stderr = "";
+    proc.stderr.on("data", (d) => (stderr += d.toString()));
+    proc.on("close", () => {
+      const match = stderr.match(/(\d+(?:\.\d+)?)\s*fps/);
+      resolve(match ? Number(match[1]) : null);
+    });
+    proc.on("error", () => resolve(null));
+  });
+}
+
 export async function POST(req: NextRequest, { params }: Params) {
   let assPath = "";
   let outputPath = "";
@@ -237,7 +254,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       })
       .filter((e): e is ClipEffect => e !== null);
 
-    const effectsChain = buildEffectsFilterChain(remappedEffects);
+    const effectsChain = buildEffectsFilterChain(remappedEffects, (await probeFps(inputPath)) ?? 25);
     if (effectsChain) vf += `,${effectsChain}`;
     if (hasCaptionableWords(words, segments)) {
       const ass = buildAss(words, segments, captionStyle);

@@ -24,31 +24,40 @@ const EFFECT_CONFIG: Record<EffectType, EffectConfig> = {
 // quanti ne propone l'AI.
 const MAX_EFFECTS_PER_CLIP = 4;
 
-function zoomExpr(atSec: number, cfg: EffectConfig): string {
-  // Impulso triangolare costruito SENZA nessuna funzione con virgola interna
-  // (né max(), né if()): dentro -filter_complex la virgola separa i filtri
-  // in catena e può creare ambiguità di parsing anche tra apici. Usiamo solo
-  // abs() (un argomento) per ottenere max(0,x) come (x+abs(x))/2.
-  const at = atSec.toFixed(2);
-  const hw = cfg.halfWidth;
+function zoomExpr(atSec: number, cfg: EffectConfig, fps: number): string {
+  // Stesso impulso triangolare di prima, ma espresso in numero di frame
+  // (variabile "on" di zoompan) invece che in secondi ("t"): su questo
+  // binario ffmpeg, "t" non è utilizzabile nelle dimensioni di scale/crop
+  // (vedi nota sopra), ma zoompan lavora nativamente per frame.
+  const atFrame = (atSec * fps).toFixed(1);
+  const hwFrames = (cfg.halfWidth * fps).toFixed(1);
   const peak = (cfg.peakZoom - 1).toFixed(3);
-  const x = `(1-abs(t-${at})/${hw})`;
+  const x = `(1-abs(on-${atFrame})/${hwFrames})`;
   const positiveX = `((${x}+abs(${x}))/2)`;
   return `(1+${peak}*${positiveX})`;
 }
+
 /**
- * Costruisce la catena di filtri ffmpeg (scale+crop) per gli effetti dati.
- * Gli "at" devono essere già nella timeline di USCITA (dopo remapToOutputTime).
- * L'output resta sempre 1080x1920: lo zoom è solo apparente.
+ * Costruisce la catena di filtri ffmpeg per gli effetti dati. Gli "at"
+ * devono essere già nella timeline di USCITA (dopo remapToOutputTime).
+ *
+ * Implementazione: filtro "zoompan" nativo di ffmpeg (pensato apposta per
+ * zoom/pan animati), con d=1 per non alterare durata/velocità del video
+ * (1 frame in -> 1 frame out). Evitato deliberatamente "scale" con w/h
+ * dinamici basati su "t": su questo binario ffmpeg fallisce sempre con
+ * "self-referencing" o errori di inizializzazione, anche con un solo lato
+ * dinamico — è una limitazione nota di questa build, non del nostro codice.
+ * zoompan usa "on" (numero di frame di uscita) al posto di "t", quindi
+ * serve il framerate per convertire i nostri istanti in secondi.
  */
-export function buildEffectsFilterChain(effects: ClipEffect[]): string {
+export function buildEffectsFilterChain(effects: ClipEffect[], fps: number): string {
   const capped = effects.slice(0, MAX_EFFECTS_PER_CLIP);
   return capped
     .map((e) => {
       const cfg = EFFECT_CONFIG[e.type];
       if (!cfg) return null;
-      const z = zoomExpr(e.at, cfg);
-      return `scale=w='1080*${z}':h='1920*${z}':eval=frame,crop=1080:1920`;
+      const z = zoomExpr(e.at, cfg, fps);
+      return `zoompan=z='${z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=1080x1920:fps=${fps}`;
     })
     .filter((f): f is string => f !== null)
     .join(",");
