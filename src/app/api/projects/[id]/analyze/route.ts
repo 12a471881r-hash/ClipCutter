@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { pool } from "@/lib/db";
 import { EFFECT_TYPES, type EffectType } from "@/lib/editingEffects";
+import { CAPTION_STYLES, type CaptionStyle } from "@/lib/captions";
+import { STYLE_PROFILES, buildGenreGuidanceBlock, resolveGenre } from "@/lib/styleProfiles";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -44,7 +46,9 @@ Regole:
 - Ogni clip deve durare tra 20 e 60 secondi in totale (somma dei segmenti).
 
 Rispondi SOLO con un oggetto JSON in questo formato esatto, senza testo aggiuntivo, markdown o spiegazioni:
-{"clips":[{"segments":[{"start":<secondi numero>,"end":<secondi numero>}],"title":"...","hook":"...","score":<0-100 numero>,"reasoning":"perché questa clip funziona, in una frase","effects":[{"type":"punch_zoom","at":<secondi numero>}],"loop":{"enabled":true/false,"loopScore":<0-100 numero>,"type":"semantic|sentence|question_answer|none","reason":"...","startSegment":"...","endSegment":"..."}}]}`;
+{"content_genre":"A_educational|B_podcast|C_edit","clips":[{"segments":[{"start":<secondi numero>,"end":<secondi numero>}],"title":"...","hook":"...","score":<0-100 numero>,"reasoning":"perché questa clip funziona, in una frase","effects":[{"type":"punch_zoom","at":<secondi numero>}],"caption_style":"karaoke|minimal|pop","loop":{"enabled":true/false,"loopScore":<0-100 numero>,"type":"semantic|sentence|question_answer|none","reason":"...","startSegment":"...","endSegment":"..."}}]}
+
+${buildGenreGuidanceBlock()}`;
 
 function buildTimestampedTranscript(words: Word[]): string {
   let result = "";
@@ -279,6 +283,15 @@ export async function POST(_req: NextRequest, { params }: Params) {
     const parsed = JSON.parse(cleaned);
     const clips = parsed.clips ?? [];
 
+    // Genere del contenuto: deciso dall'AI in base alla guida iniettata nel
+    // prompt, validato contro i generi noti (fallback prudente altrimenti).
+    // Determina lo stile sottotitoli di default e il tetto sugli effetti
+    // per questo progetto — nessuna modifica al motore di rendering, solo
+    // ai parametri con cui viene chiamato.
+    const genre = resolveGenre(parsed.content_genre);
+    const profile = STYLE_PROFILES[genre];
+    await pool.query("UPDATE projects SET content_genre = $1 WHERE id = $2", [genre, id]);
+
     await pool.query("DELETE FROM clips WHERE project_id = $1", [id]);
 
     const saved = [];
@@ -327,11 +340,18 @@ export async function POST(_req: NextRequest, { params }: Params) {
             typeof e.at === "number" &&
             snapped.some((seg) => e.at! >= seg.start && e.at! <= seg.end)
         )
-        .slice(0, 4);
+        .slice(0, profile.maxEffectsPerClip);
+
+      // Stile sottotitoli: usa quello proposto dall'AI per la singola clip
+      // se valido, altrimenti il default del genere del progetto — mai un
+      // valore hardcoded fisso indipendente dal contenuto.
+      const captionStyle: CaptionStyle = CAPTION_STYLES.includes(clip.caption_style)
+        ? clip.caption_style
+        : profile.defaultCaptionStyle;
 
       const { rows: clipRows } = await pool.query(
-        `INSERT INTO clips (project_id, start_time, end_time, title, hook, score, segments, reasoning, effects, loop)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        `INSERT INTO clips (project_id, start_time, end_time, title, hook, score, segments, reasoning, effects, loop, caption_style)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
         [
           id,
           envelopeStart,
@@ -343,6 +363,7 @@ export async function POST(_req: NextRequest, { params }: Params) {
           clip.reasoning ?? null,
           JSON.stringify(validEffects),
           JSON.stringify(loopData),
+          captionStyle,
         ]
       );
       saved.push(clipRows[0]);
