@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { pool } from "@/lib/db";
 import { EFFECT_TYPES, type EffectType } from "@/lib/editingEffects";
 import { CAPTION_STYLES, type CaptionStyle } from "@/lib/captions";
-import { STYLE_PROFILES, buildGenreGuidanceBlock, resolveGenre } from "@/lib/styleProfiles";
+import { STYLE_PROFILES, buildGenreGuidanceBlock, resolveGenre, computeWeightedScore } from "@/lib/styleProfiles";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -45,8 +45,26 @@ Regole:
 - Evita: introduzioni inutili, pause, ripetizioni, segmenti troppo brevi o senza contesto.
 - Ogni clip deve durare tra 20 e 60 secondi in totale (somma dei segmenti).
 
+SELEZIONE DEI SEGMENTI (Fase 6): valuta ogni clip candidata su questi criteri prima di includerla nella risposta finale:
+forza dell'hook, curiosità/interesse iniziale, completezza del pensiero, coerenza semantica, presenza di un payoff/conclusione, potenziale di engagement, chiarezza senza contesto esterno, durata appropriata al contenuto (non sempre la più lunga né la più corta), ridondanza rispetto alle altre clip scelte.
+
+Regole aggiuntive per la selezione:
+1. Non tagliare mai a metà una frase.
+2. Preferisci l'inizio naturale di un pensiero.
+3. Preferisci la fine naturale del pensiero/payoff — es. NON scegliere "Il problema è che molte persone…" se il pensiero continua subito dopo; preferisci includerlo fino alla sua conclusione naturale ("...fanno X, perché Y. Ed è proprio questo che porta a Z.").
+4. Evita clip che richiedono troppo contesto precedente per essere capite.
+5. Evita di proporre due clip quasi identiche tra loro (stesso segmento o stesso contenuto con minime variazioni) — se due candidate si sovrappongono molto, scegli solo la migliore delle due.
+6. Non scegliere automaticamente le clip più lunghe.
+7. Non scegliere automaticamente le clip più corte.
+8. La durata deve emergere dal contenuto, non da un target fisso.
+9. Valuta l'hook come dimensione separata dal resto (vedi hook_score sotto), non un'impressione generale unica.
+10. Il payoff deve essere presente quando il contenuto lo permette.
+11. Non inventare mai testo o contenuto non presente nella trascrizione.
+
+Per ogni clip scelta, oltre a "score" (il punteggio complessivo), restituisci anche 4 sotto-punteggi separati da 0 a 100: "hook_score" (forza dell'aggancio iniziale), "coherence_score" (coerenza semantica e completezza del pensiero, chiarezza senza contesto esterno), "payoff_score" (presenza e forza di una conclusione/rivelazione), "engagement_score" (potenziale di coinvolgimento/curiosità/sorpresa). Aggiungi anche "reason": una frase che spiega perché questa clip ha ottenuto questi punteggi.
+
 Rispondi SOLO con un oggetto JSON in questo formato esatto, senza testo aggiuntivo, markdown o spiegazioni:
-{"content_genre":"A_educational|B_podcast|C_edit","clips":[{"segments":[{"start":<secondi numero>,"end":<secondi numero>}],"title":"...","hook":"...","score":<0-100 numero>,"reasoning":"perché questa clip funziona, in una frase","effects":[{"type":"punch_zoom","at":<secondi numero>}],"caption_style":"karaoke|minimal|pop","loop":{"enabled":true/false,"loopScore":<0-100 numero>,"type":"semantic|sentence|question_answer|none","reason":"...","startSegment":"...","endSegment":"..."}}]}
+{"content_genre":"A_educational|B_podcast|C_edit","clips":[{"segments":[{"start":<secondi numero>,"end":<secondi numero>}],"title":"...","hook":"...","score":<0-100 numero>,"hook_score":<0-100 numero>,"coherence_score":<0-100 numero>,"payoff_score":<0-100 numero>,"engagement_score":<0-100 numero>,"reason":"...","reasoning":"perché questa clip funziona, in una frase","effects":[{"type":"punch_zoom","at":<secondi numero>}],"caption_style":"karaoke|minimal|pop","loop":{"enabled":true/false,"loopScore":<0-100 numero>,"type":"semantic|sentence|question_answer|none","reason":"...","startSegment":"...","endSegment":"..."}}]}
 
 ${buildGenreGuidanceBlock()}`;
 
@@ -96,6 +114,36 @@ function snapToWordBoundary(
 }
 
 type ClipSegment = { start: number; end: number };
+
+// Fase 6 (Smart Segment Selection) — helper di validazione/punteggio.
+// Nessuna nuova chiamata AI: lavoriamo sui dati della stessa risposta.
+
+function clampScore(value: unknown, fallback: number): number {
+  // Attenzione: Number(null) === 0 e Number("") === 0, quindi un campo
+  // assente/vuoto verrebbe letto come punteggio 0 (penalizzazione
+  // ingiusta). Accettiamo solo numeri veri o stringhe numeriche.
+  if (typeof value !== "number" && typeof value !== "string") return fallback;
+  if (typeof value === "string" && value.trim() === "") return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(100, n));
+}
+
+/** Frazione di sovrapposizione temporale tra due set di segmenti (0-1),
+ * calcolata sul più corto dei due: serve a scartare clip quasi identiche. */
+function overlapRatio(a: ClipSegment[], b: ClipSegment[]): number {
+  const totalOf = (segs: ClipSegment[]) =>
+    segs.reduce((sum, s) => sum + Math.max(0, s.end - s.start), 0);
+
+  let shared = 0;
+  for (const sa of a) {
+    for (const sb of b) {
+      shared += Math.max(0, Math.min(sa.end, sb.end) - Math.max(sa.start, sb.start));
+    }
+  }
+  const shortest = Math.min(totalOf(a), totalOf(b));
+  return shortest > 0 ? shared / shortest : 0;
+}
 
 // Fase 3 (AI Hook): il campo "hook" deve essere davvero presente nel video.
 // Verifichiamo che le parole dell'hook dichiarato si sovrappongano abbastanza
@@ -295,6 +343,7 @@ export async function POST(_req: NextRequest, { params }: Params) {
     await pool.query("DELETE FROM clips WHERE project_id = $1", [id]);
 
     const saved = [];
+    const keptSegments: ClipSegment[][] = [];
     for (const clip of clips) {
       // Supporta sia il nuovo formato {segments:[{start,end},...]} sia,
       // per sicurezza, un eventuale vecchio formato piatto {start,end}.
@@ -306,9 +355,34 @@ export async function POST(_req: NextRequest, { params }: Params) {
       const snapped = rawSegments.map((seg) =>
         snapToWordBoundary(project.transcript.words, seg.start, seg.end)
       );
+
+      // Deduplicazione: scarta una candidata che si sovrappone per oltre
+      // l'80% a una clip già accettata (l'AI a volte propone varianti quasi
+      // identiche dello stesso momento). Le clip arrivano già ordinate per
+      // qualità, quindi teniamo la prima e scartiamo le successive simili.
+      if (keptSegments.some((prev) => overlapRatio(prev, snapped) > 0.8)) {
+        console.log("Clip scartata perché troppo simile a una già scelta");
+        continue;
+      }
+
       const envelopeStart = Math.min(...snapped.map((s) => s.start));
       const envelopeEnd = Math.max(...snapped.map((s) => s.end));
       const groundedHook = groundHook(clip.hook ?? null, project.transcript.words, snapped[0]);
+
+      // Sotto-punteggi: se l'AI non li fornisce (o non sono numeri validi)
+      // ricadiamo sul punteggio complessivo, così il comportamento resta
+      // quello della fase precedente invece di rompersi.
+      const baseScore = clampScore(clip.score, 50);
+      const subScores = {
+        hook: clampScore(clip.hook_score, baseScore),
+        coherence: clampScore(clip.coherence_score, baseScore),
+        payoff: clampScore(clip.payoff_score, baseScore),
+        engagement: clampScore(clip.engagement_score, baseScore),
+      };
+      // Punteggio finale = media pesata secondo il genere. Così una clip con
+      // hook forte ma payoff/coerenza deboli viene penalizzata anche se
+      // l'AI le aveva dato uno "score" generoso.
+      const weightedScore = Math.round(computeWeightedScore(profile, subScores));
 
       // Validazione del loop: type tra i 4 ammessi, score clampato 0-100,
       // startSegment/endSegment verificati contro le parole vere (stesso
@@ -349,6 +423,15 @@ export async function POST(_req: NextRequest, { params }: Params) {
         ? clip.caption_style
         : profile.defaultCaptionStyle;
 
+      // Motivazione: usiamo "reason" (nuovo, specifico sui punteggi) se
+      // presente, altrimenti "reasoning" come nelle fasi precedenti. I
+      // sotto-punteggi vengono accodati qui per tracciabilità, senza
+      // aggiungere colonne al database.
+      const reasonText = clip.reason ?? clip.reasoning ?? null;
+      const reasoningWithScores = reasonText
+        ? `${reasonText} [hook:${subScores.hook} coerenza:${subScores.coherence} payoff:${subScores.payoff} engagement:${subScores.engagement}]`
+        : `[hook:${subScores.hook} coerenza:${subScores.coherence} payoff:${subScores.payoff} engagement:${subScores.engagement}]`;
+
       const { rows: clipRows } = await pool.query(
         `INSERT INTO clips (project_id, start_time, end_time, title, hook, score, segments, reasoning, effects, loop, caption_style)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
@@ -358,15 +441,16 @@ export async function POST(_req: NextRequest, { params }: Params) {
           envelopeEnd,
           clip.title ?? null,
           groundedHook,
-          clip.score ?? null,
+          weightedScore,
           JSON.stringify(snapped),
-          clip.reasoning ?? null,
+          reasoningWithScores,
           JSON.stringify(validEffects),
           JSON.stringify(loopData),
           captionStyle,
         ]
       );
       saved.push(clipRows[0]);
+      keptSegments.push(snapped);
     }
 
     return NextResponse.json({ clips: saved });
