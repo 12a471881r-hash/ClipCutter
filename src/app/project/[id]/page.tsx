@@ -16,6 +16,7 @@ type Clip = {
   hook: string | null;
   score: number | null;
   video_url: string | null;
+  caption_style: string | null;
 };
 
 type Project = {
@@ -233,7 +234,7 @@ export default function ProjectPage() {
                 {formatDuration(Number(clip.end_time))}
               </p>
 
-              {clip.video_url ? (
+              {clip.video_url && (
                 <div className="flex items-center gap-3 pt-1">
                   <video
                     src={clip.video_url}
@@ -248,31 +249,45 @@ export default function ProjectPage() {
                     Scarica
                   </a>
                 </div>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <select
-                    className="text-xs border border-border rounded-md px-2 py-1.5 bg-card"
-                    value={captionStyles[clip.id] ?? "karaoke"}
-                    disabled={renderingClipId === clip.id}
-                    onChange={(e) =>
-                      setCaptionStyles((s) => ({ ...s, [clip.id]: e.target.value }))
-                    }
-                  >
-                    <option value="karaoke">Sottotitoli: Karaoke</option>
-                    <option value="pop">Sottotitoli: Pop</option>
-                    <option value="minimal">Sottotitoli: Minimal</option>
-                  </select>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={renderingClipId === clip.id}
-                    onClick={() => renderClip(clip.id, captionStyles[clip.id] ?? "karaoke")}
-                  >
-                    {renderingClipId === clip.id ? "Generazione..." : "Genera clip"}
-                  </Button>
-                </div>
               )}
+
+              {/* Il selettore resta disponibile anche dopo la generazione:
+                  prima spariva appena la clip aveva un video_url, quindi con
+                  il rendering automatico non era mai raggiungibile. Il valore
+                  mostrato parte dallo stile realmente salvato sulla clip
+                  (scelto dallo Style Profile), non da un default fisso. */}
+              <div className="flex items-center gap-2 pt-1">
+                <select
+                  className="text-xs border border-border rounded-md px-2 py-1.5 bg-card"
+                  value={captionStyles[clip.id] ?? clip.caption_style ?? "karaoke"}
+                  disabled={renderingClipId === clip.id}
+                  onChange={(e) =>
+                    setCaptionStyles((s) => ({ ...s, [clip.id]: e.target.value }))
+                  }
+                >
+                  <option value="karaoke">Sottotitoli: Karaoke</option>
+                  <option value="pop">Sottotitoli: Pop</option>
+                  <option value="minimal">Sottotitoli: Minimal</option>
+                </select>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={renderingClipId === clip.id}
+                  onClick={() =>
+                    renderClip(
+                      clip.id,
+                      captionStyles[clip.id] ?? clip.caption_style ?? undefined
+                    )
+                  }
+                >
+                  {renderingClipId === clip.id
+                    ? "Generazione..."
+                    : clip.video_url
+                      ? "Rigenera"
+                      : "Genera clip"}
+                </Button>
+              </div>
             </Card>
           ))}
         </div>

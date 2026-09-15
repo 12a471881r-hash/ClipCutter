@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { pool } from "@/lib/db";
 import { EFFECT_TYPES, type EffectType } from "@/lib/editingEffects";
 import { CAPTION_STYLES, type CaptionStyle } from "@/lib/captions";
-import { STYLE_PROFILES, buildGenreGuidanceBlock, resolveGenre, computeWeightedScore } from "@/lib/styleProfiles";
+import {
+  STYLE_PROFILES,
+  SELECTION_CONFIG,
+  buildGenreGuidanceBlock,
+  resolveGenre,
+  computeWeightedScore,
+} from "@/lib/styleProfiles";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -15,7 +21,7 @@ type Word = { text: string; start: number; end: number };
 
 const SYSTEM_PROMPT = `Sei un editor esperto di video short-form virali. Riceverai la trascrizione di un video con marcatori di tempo nel formato [mm:ss].
 
-Il tuo compito non è tagliare intervalli a caso, ma capire il significato del discorso e trovare 3-5 estratti che funzionino come video verticali brevi (Shorts/Reels/TikTok).
+Il tuo compito non è tagliare intervalli a caso, ma capire il significato del discorso e proporre fino a 8 estratti CANDIDATI che funzionino come video verticali brevi (Shorts/Reels/TikTok). La selezione finale dei migliori viene fatta a valle sulla base dei punteggi che assegni, quindi proponi tutti i momenti che meritano davvero, senza riempire la lista con candidati deboli: se il video contiene solo 3 buoni momenti, proponine 3.
 
 Per ogni clip, segui la struttura HOOK → CONTEXT → PAYOFF:
 - HOOK: il PRIMO segmento della clip deve catturare l'attenzione nei primi istanti. Se la frase più forte del discorso non è all'inizio cronologico del contenuto scelto, puoi METTERLA COME PRIMO SEGMENTO comunque, anche se nel video originale viene dopo — poi fai seguire gli altri segmenti (es. il contesto iniziale) in modo che il tutto resti comprensibile.
@@ -340,28 +346,56 @@ export async function POST(_req: NextRequest, { params }: Params) {
     const profile = STYLE_PROFILES[genre];
     await pool.query("UPDATE projects SET content_genre = $1 WHERE id = $2", [genre, id]);
 
-    await pool.query("DELETE FROM clips WHERE project_id = $1", [id]);
+    // ------------------------------------------------------------------
+    // PASSO 1 — Validazione: costruiamo i candidati, scartando output
+    // degeneri dell'AI. Nessun inserimento ancora: ordinamento e
+    // deduplicazione devono avvenire PRIMA di scegliere, altrimenti si
+    // tiene la clip che capita per prima invece della migliore.
+    // ------------------------------------------------------------------
+    type Candidate = {
+      snapped: ClipSegment[];
+      weightedScore: number;
+      row: unknown[];
+    };
+    const candidates: Candidate[] = [];
 
-    const saved = [];
-    const keptSegments: ClipSegment[][] = [];
     for (const clip of clips) {
       // Supporta sia il nuovo formato {segments:[{start,end},...]} sia,
       // per sicurezza, un eventuale vecchio formato piatto {start,end}.
       const rawSegments: ClipSegment[] =
         clip.segments ?? (clip.start !== undefined ? [{ start: clip.start, end: clip.end }] : []);
 
-      if (rawSegments.length === 0) continue;
+      if (!Array.isArray(rawSegments) || rawSegments.length === 0) continue;
 
-      const snapped = rawSegments.map((seg) =>
-        snapToWordBoundary(project.transcript.words, seg.start, seg.end)
-      );
+      const snapped = rawSegments
+        .filter(
+          (seg) =>
+            seg &&
+            Number.isFinite(Number(seg.start)) &&
+            Number.isFinite(Number(seg.end)) &&
+            Number(seg.start) >= 0 &&
+            Number(seg.start) < Number(seg.end)
+        )
+        .map((seg) =>
+          snapToWordBoundary(project.transcript.words, Number(seg.start), Number(seg.end))
+        )
+        // Lo snap può, su input anomali, produrre un segmento degenere:
+        // ricontrolliamo dopo la conversione.
+        .filter((seg) => seg.end > seg.start);
 
-      // Deduplicazione: scarta una candidata che si sovrappone per oltre
-      // l'80% a una clip già accettata (l'AI a volte propone varianti quasi
-      // identiche dello stesso momento). Le clip arrivano già ordinate per
-      // qualità, quindi teniamo la prima e scartiamo le successive simili.
-      if (keptSegments.some((prev) => overlapRatio(prev, snapped) > 0.8)) {
-        console.log("Clip scartata perché troppo simile a una già scelta");
+      if (snapped.length === 0) {
+        console.warn("Clip scartata: nessun segmento valido (start/end non coerenti)");
+        continue;
+      }
+
+      const totalDuration = snapped.reduce((sum, s) => sum + (s.end - s.start), 0);
+      if (
+        totalDuration < SELECTION_CONFIG.minClipSeconds ||
+        totalDuration > SELECTION_CONFIG.maxClipSeconds
+      ) {
+        console.warn(
+          `Clip scartata: durata ${totalDuration.toFixed(1)}s fuori dai limiti di sicurezza (${SELECTION_CONFIG.minClipSeconds}-${SELECTION_CONFIG.maxClipSeconds}s)`
+        );
         continue;
       }
 
@@ -432,10 +466,10 @@ export async function POST(_req: NextRequest, { params }: Params) {
         ? `${reasonText} [hook:${subScores.hook} coerenza:${subScores.coherence} payoff:${subScores.payoff} engagement:${subScores.engagement}]`
         : `[hook:${subScores.hook} coerenza:${subScores.coherence} payoff:${subScores.payoff} engagement:${subScores.engagement}]`;
 
-      const { rows: clipRows } = await pool.query(
-        `INSERT INTO clips (project_id, start_time, end_time, title, hook, score, segments, reasoning, effects, loop, caption_style)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-        [
+      candidates.push({
+        snapped,
+        weightedScore,
+        row: [
           id,
           envelopeStart,
           envelopeEnd,
@@ -447,10 +481,73 @@ export async function POST(_req: NextRequest, { params }: Params) {
           JSON.stringify(validEffects),
           JSON.stringify(loopData),
           captionStyle,
-        ]
+        ],
+      });
+    }
+
+    // ------------------------------------------------------------------
+    // PASSO 2 — Ordinamento per punteggio pesato (decrescente).
+    // Finora il weightedScore veniva calcolato e salvato ma MAI usato per
+    // scegliere: le clip venivano tenute nell'ordine in cui le restituiva
+    // l'AI (tipicamente cronologico).
+    // ------------------------------------------------------------------
+    candidates.sort((a, b) => b.weightedScore - a.weightedScore);
+
+    // ------------------------------------------------------------------
+    // PASSO 3 — Deduplicazione DOPO l'ordinamento: ora "la prima" è
+    // davvero la migliore, non la cronologicamente precedente.
+    // ------------------------------------------------------------------
+    const deduped: Candidate[] = [];
+    for (const cand of candidates) {
+      const duplicate = deduped.some(
+        (kept) =>
+          overlapRatio(kept.snapped, cand.snapped) > SELECTION_CONFIG.dedupOverlapThreshold
+      );
+      if (duplicate) {
+        console.log(
+          `Clip scartata (punteggio ${cand.weightedScore}): troppo simile a una già selezionata con punteggio più alto`
+        );
+        continue;
+      }
+      deduped.push(cand);
+    }
+
+    // ------------------------------------------------------------------
+    // PASSO 4 — Limite finale. Se i candidati validi sono meno del limite
+    // si restituiscono semplicemente quelli disponibili: non si inventano
+    // clip per raggiungere il numero.
+    // ------------------------------------------------------------------
+    const selected = deduped.slice(0, SELECTION_CONFIG.maxClips);
+    console.log(
+      `Selezione clip: ${clips.length} proposte dall'AI → ${candidates.length} valide → ${deduped.length} dopo dedup → ${selected.length} selezionate (limite ${SELECTION_CONFIG.maxClips}); punteggi: ${selected.map((c) => c.weightedScore).join(", ")}`
+    );
+
+    // Se nessun candidato supera la validazione, NON cancelliamo nulla: il
+    // progetto conserva le clip precedenti (se ce n'erano) e l'utente riceve
+    // un errore esplicito, invece di ritrovarsi il progetto svuotato in
+    // silenzio.
+    if (selected.length === 0) {
+      return NextResponse.json(
+        {
+          error:
+            "L'analisi non ha prodotto clip valide. Riprova: se il problema persiste, il video potrebbe essere troppo corto o senza parlato sufficiente.",
+        },
+        { status: 422 }
+      );
+    }
+
+    // Le clip vengono cancellate solo ORA che sappiamo di avere dei
+    // sostituti validi.
+    await pool.query("DELETE FROM clips WHERE project_id = $1", [id]);
+
+    const saved = [];
+    for (const cand of selected) {
+      const { rows: clipRows } = await pool.query(
+        `INSERT INTO clips (project_id, start_time, end_time, title, hook, score, segments, reasoning, effects, loop, caption_style)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+        cand.row
       );
       saved.push(clipRows[0]);
-      keptSegments.push(snapped);
     }
 
     return NextResponse.json({ clips: saved });

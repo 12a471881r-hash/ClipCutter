@@ -12,6 +12,25 @@
 
 import type { CaptionStyle } from "./captions";
 
+/**
+ * Parametri della selezione finale delle clip. Unico punto da modificare:
+ * non duplicare questi valori altrove. In futuro `maxClips` sarà il valore
+ * scelto dall'utente, per questo è già isolato qui.
+ */
+export const SELECTION_CONFIG = {
+  /** Quante clip conservare al massimo dopo ordinamento e deduplicazione.
+   *  Se i candidati validi sono meno, se ne restituiscono meno: non si
+   *  inventano clip per raggiungere il numero. */
+  maxClips: 5,
+  /** Limiti di sicurezza sulla durata totale di una clip (somma dei
+   *  segmenti). Non sono il target estetico (20-60s, chiesto nel prompt):
+   *  servono solo a scartare output degeneri dell'AI. */
+  minClipSeconds: 5,
+  maxClipSeconds: 120,
+  /** Sopra questa sovrapposizione due clip sono considerate la stessa. */
+  dedupOverlapThreshold: 0.8,
+} as const;
+
 export type ContentGenre = "A_educational" | "B_podcast" | "C_edit";
 
 export const GENRE_IDS: ContentGenre[] = ["A_educational", "B_podcast", "C_edit"];

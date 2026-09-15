@@ -60,19 +60,50 @@ function walkSegments(
   for (const seg of segments) {
     const segStartMs = seg.start * 1000;
     const segEndMs = seg.end * 1000;
+    const segDurationMs = Math.max(0, segEndMs - segStartMs);
     const relevant = words.filter(
       (w) => w.end > segStartMs && w.start < segEndMs && w.text?.trim()
     );
 
     for (let i = 0; i < relevant.length; i += chunkSize) {
       const chunk = relevant.slice(i, i + chunkSize);
-      const startMs = cumulativeMs + Math.max(0, chunk[0].start - segStartMs);
-      const endMs =
-        cumulativeMs + Math.max(startMs + 1, chunk[chunk.length - 1].end - segStartMs);
-      out.push({ chunk, startMs, endMs });
+
+      // IMPORTANTE: inizio e fine vanno calcolati entrambi in coordinate
+      // RELATIVE al segmento, e solo alla fine si somma cumulativeMs una
+      // volta sola. Sommarlo prima del confronto (com'era in origine) lo
+      // faceva contare due volte dal secondo segmento in poi: le didascalie
+      // restavano a schermo fino alla fine della clip e si accumulavano.
+      const relStart = Math.max(0, chunk[0].start - segStartMs);
+      if (relStart >= segDurationMs) continue; // parola fuori dal segmento
+
+      // La didascalia non può mai estendersi oltre la fine del proprio
+      // segmento: senza questo clamp, una parola che "sborda" dal taglio
+      // resterebbe visibile sopra il segmento successivo.
+      const relEnd = Math.min(
+        segDurationMs,
+        Math.max(relStart + 1, chunk[chunk.length - 1].end - segStartMs)
+      );
+      if (relEnd <= relStart) continue;
+
+      out.push({
+        chunk,
+        startMs: cumulativeMs + relStart,
+        endMs: cumulativeMs + relEnd,
+      });
     }
-    cumulativeMs += segEndMs - segStartMs;
+    cumulativeMs += segDurationMs;
   }
+
+  // Rete di sicurezza: se due didascalie consecutive si sovrappongono
+  // (possibile con timestamp di parole leggermente sovrapposti), accorciamo
+  // la precedente. Due eventi ASS simultanei verrebbero disegnati uno sopra
+  // l'altro.
+  for (let i = 0; i < out.length - 1; i++) {
+    if (out[i].endMs > out[i + 1].startMs) {
+      out[i].endMs = Math.max(out[i].startMs + 1, out[i + 1].startMs);
+    }
+  }
+
   return out;
 }
 
