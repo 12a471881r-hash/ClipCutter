@@ -8,7 +8,10 @@ import {
   compressVideoIfNeeded,
   cancelCompression,
   CompressionCancelledError,
+  DEFAULT_MAX_UPLOAD_BYTES,
+  HARD_LIMIT_BYTES,
   type CompressionProgress,
+  type CompressionOptions,
 } from "@/lib/videoCompression";
 import { Button } from "@/components/ui/button";
 
@@ -49,13 +52,58 @@ export default function Home() {
     setSizes(null);
     let fileToUpload = file;
 
-    if (file.size > 50 * 1024 * 1024) {
+    // Il limite di 50MB è reale solo su Supabase Storage: su S3/R2
+    // (objectStore.ts, se configurato) non esiste. Sotto i 50MB nessun
+    // backend richiederebbe comunque la compressione, quindi controlliamo
+    // il backend attivo solo quando serve davvero — sopra quella soglia.
+    // /api/upload-url lo sa già; uploadVideo() più sotto farà una sua
+    // chiamata separata per ottenere l'URL di upload effettivo (una
+    // richiesta in più solo per i file grandi, ma evita di riusare un
+    // presigned URL che potrebbe scadere se la compressione dura a lungo).
+    // Se questa chiamata fallisce per qualunque motivo, si ricade sul
+    // comportamento Supabase (il più conservativo), invariato rispetto a prima.
+    let uploadThreshold: number = DEFAULT_MAX_UPLOAD_BYTES;
+    let compressionOptions: CompressionOptions | undefined;
+
+    if (file.size > DEFAULT_MAX_UPLOAD_BYTES) {
+      try {
+        const backendRes = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: file.name, type: file.type }),
+        });
+        if (backendRes.ok) {
+          const backendData = await backendRes.json();
+          if (backendData.mode === "s3") {
+            // Nessun limite reale su S3/R2: la sola soglia che conta è
+            // quella di sicurezza per la memoria del browser
+            // (HARD_LIMIT_BYTES), condivisa con compressVideoIfNeeded.
+            uploadThreshold = HARD_LIMIT_BYTES;
+            compressionOptions = {
+              maxUploadBytes: HARD_LIMIT_BYTES,
+              targetGoalBytes: HARD_LIMIT_BYTES,
+            };
+          }
+        }
+      } catch (err) {
+        console.warn(
+          "Impossibile determinare il backend di storage, uso il limite Supabase (50MB):",
+          err
+        );
+      }
+    }
+
+    if (file.size > uploadThreshold) {
       setCompressing(true);
       setCompressPercent(0);
       try {
-        const result = await compressVideoIfNeeded(file, (p: CompressionProgress) => {
-          setCompressPercent(p.percent);
-        });
+        const result = await compressVideoIfNeeded(
+          file,
+          (p: CompressionProgress) => {
+            setCompressPercent(p.percent);
+          },
+          compressionOptions
+        );
         fileToUpload = result.file;
         if (result.wasCompressed) {
           setSizes({ original: result.originalBytes, compressed: result.compressedBytes });

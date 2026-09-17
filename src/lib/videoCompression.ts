@@ -3,17 +3,21 @@
 // che rischierebbero di rompere il resto dell'app (player Supabase, fetch
 // verso servizi esterni). È più lento del core multi-thread ma più robusto.
 
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
-const TARGET_GOAL_BYTES = 44 * 1024 * 1024; // punto medio della finestra 40-48MB
+// Valori di default: validi per Supabase Storage (limite reale 50MB).
+// Chi chiama compressVideoIfNeeded può sovrascriverli via CompressionOptions
+// quando il backend attivo non ha questo limite (es. S3/R2) — vedi page.tsx.
+export const DEFAULT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+export const DEFAULT_TARGET_GOAL_BYTES = 44 * 1024 * 1024; // punto medio della finestra 40-48MB
 const AUDIO_KBPS = 96;
 // Floor puramente di sicurezza (evita bitrate 0/negativi), non di qualità:
-// l'obiettivo primario è stare sotto 50MB, anche a scapito della qualità
-// per video molto lunghi.
+// l'obiettivo primario è stare sotto la soglia richiesta, anche a scapito
+// della qualità per video molto lunghi.
 const MIN_VIDEO_KBPS = 80;
 // Oltre questa soglia, ffmpeg.wasm rischia seriamente di esaurire la memoria
-// del tab ed essere terminato dal browser (limite pratico, non solo lento):
-// meglio avvisare chiaramente che tentare e far crashare la pagina.
-const HARD_LIMIT_BYTES = 350 * 1024 * 1024;
+// del tab ed essere terminato dal browser (limite pratico del browser, non
+// della piattaforma di storage): meglio avvisare chiaramente che tentare e
+// far crashare la pagina. Vale per qualunque backend.
+export const HARD_LIMIT_BYTES = 350 * 1024 * 1024;
 const MAX_ATTEMPTS = 3;
 // Moltiplicatore sul bitrate target ad ogni tentativo successivo (più aggressivo).
 const AGGRESSIVENESS = [1, 0.65, 0.4];
@@ -41,6 +45,13 @@ export type CompressionProgress = {
   phase: "loading" | "compressing";
   percent: number;
   attempt: number;
+};
+
+export type CompressionOptions = {
+  // Sopra questo valore si tenta la compressione. Default: DEFAULT_MAX_UPLOAD_BYTES.
+  maxUploadBytes?: number;
+  // Dimensione finale a cui si punta durante la compressione. Default: DEFAULT_TARGET_GOAL_BYTES.
+  targetGoalBytes?: number;
 };
 
 export type CompressionResult = {
@@ -109,15 +120,24 @@ export function cancelCompression() {
 }
 
 /**
- * Se il file è già <= 50MB lo restituisce invariato. Altrimenti lo comprime
- * nel browser (H.264/AAC/MP4, 1080p max) puntando a 40-48MB, riprovando con
- * impostazioni più aggressive fino a MAX_ATTEMPTS volte.
+ * Se il file è già <= maxUploadBytes (default 50MB, il limite reale di
+ * Supabase Storage) lo restituisce invariato. Altrimenti lo comprime nel
+ * browser (H.264/AAC/MP4, 1080p max) puntando a targetGoalBytes (default
+ * 44MB), riprovando con impostazioni più aggressive fino a MAX_ATTEMPTS
+ * volte. Chi chiama può alzare entrambi i valori quando il backend attivo
+ * non ha un vero limite di dimensione (es. S3/R2) — vedi CompressionOptions.
+ * HARD_LIMIT_BYTES resta invece fisso: è un tetto di sicurezza per la
+ * memoria del browser, indipendente dal backend di storage.
  */
 export async function compressVideoIfNeeded(
   file: File,
-  onProgress?: (p: CompressionProgress) => void
+  onProgress?: (p: CompressionProgress) => void,
+  options?: CompressionOptions
 ): Promise<CompressionResult> {
-  if (file.size <= MAX_UPLOAD_BYTES) {
+  const maxUploadBytes = options?.maxUploadBytes ?? DEFAULT_MAX_UPLOAD_BYTES;
+  const targetGoalBytes = options?.targetGoalBytes ?? DEFAULT_TARGET_GOAL_BYTES;
+
+  if (file.size <= maxUploadBytes) {
     return {
       file,
       originalBytes: file.size,
@@ -168,7 +188,7 @@ export async function compressVideoIfNeeded(
     const factor = AGGRESSIVENESS[attempt - 1];
     const totalKbps =
       meta.duration > 0
-        ? Math.floor((TARGET_GOAL_BYTES * 8) / meta.duration / 1000) * factor
+        ? Math.floor((targetGoalBytes * 8) / meta.duration / 1000) * factor
         : 1500 * factor; // durata ignota: bitrate fisso prudente
     const videoKbps = Math.max(MIN_VIDEO_KBPS, Math.round(totalKbps - AUDIO_KBPS));
 
@@ -221,16 +241,16 @@ export async function compressVideoIfNeeded(
     if (cancelled) throw new CompressionCancelledError();
 
     outputData = (await ffmpeg.readFile(outputName)) as Uint8Array;
-    if (outputData.byteLength <= MAX_UPLOAD_BYTES) break;
+    if (outputData.byteLength <= maxUploadBytes) break;
   }
 
   if (!outputData) {
     throw new Error("Compressione fallita dopo tutti i tentativi.");
   }
 
-  if (outputData.byteLength > MAX_UPLOAD_BYTES) {
+  if (outputData.byteLength > maxUploadBytes) {
     throw new Error(
-      `Anche con la massima compressione il video resta a ${(outputData.byteLength / 1024 / 1024).toFixed(0)} MB, sopra il limite di 50MB — probabilmente è troppo lungo. Prova ad accorciarlo o a comprimerlo manualmente con qualità più bassa.`
+      `Anche con la massima compressione il video resta a ${(outputData.byteLength / 1024 / 1024).toFixed(0)} MB, sopra il limite di ${(maxUploadBytes / 1024 / 1024).toFixed(0)}MB — probabilmente è troppo lungo. Prova ad accorciarlo o a comprimerlo manualmente con qualità più bassa.`
     );
   }
 
