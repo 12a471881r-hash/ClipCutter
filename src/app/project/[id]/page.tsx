@@ -171,7 +171,7 @@ export default function ProjectPage() {
   return (
     <main className="flex-1 px-6 py-16 max-w-2xl mx-auto w-full space-y-8">
       <div>
-        <Link href="/" className="text-sm text-muted-foreground hover:underline">
+        <Link href="/app" className="text-sm text-muted-foreground hover:underline">
           ← Nuovo video
         </Link>
         <h1 className="text-2xl font-semibold tracking-tight mt-2">{project.name}</h1>
