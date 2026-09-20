@@ -29,14 +29,15 @@ const ASSETS = {
 };
 
 const pipeline = ["Source", "Analyzing", "Hook found", "Building story", "Directing", "Final cut"];
+const pipelineEntranceKeys = ["step0", "step1", "step2", "step3", "step4", "step5"] as const;
 
 const scores = [
-  { label: "Hook", value: 98 },
-  { label: "Retention", value: 91 },
-  { label: "Emotion", value: 87 },
-  { label: "Clarity", value: 94 },
-  { label: "Payoff", value: 95 },
-];
+  { label: "Hook", value: 98, entranceKey: "metricHook" },
+  { label: "Retention", value: 91, entranceKey: "metricRetention" },
+  { label: "Emotion", value: 87, entranceKey: "metricEmotion" },
+  { label: "Clarity", value: 94, entranceKey: "metricClarity" },
+  { label: "Payoff", value: 95, entranceKey: "metricPayoff" },
+] as const;
 
 const workflow = [
   { n: "01", title: "Find", copy: "Find the best moments." },
@@ -70,6 +71,73 @@ const heroTags: { label: string; className: string; delay: string; hideOnSmall?:
   { label: "Peak / reviewing", className: "right-[8%] top-[38%]", delay: "1100ms", hideOnSmall: true },
   { label: "Retention / pending", className: "bottom-[20%] left-[10%]", delay: "1700ms", hideOnSmall: true },
 ];
+
+// ============================================================================
+// ENTRANCE — coreografia di ingresso hero+director, portata da Figma
+// (get_motion_context sul nodo 6:4, file 7SxZVLXI764peF6aPyUwbm).
+// Figma la marca come loop infinito su una timeline di 3000ms; qui viene
+// riprodotta UNA sola volta, quando la sezione entra in vista (un loop
+// continuo di testo che scivola in scena ogni 3s sarebbe fastidioso su un
+// sito vero). Delay/durate sono ricavati moltiplicando per 3000 i "times"
+// restituiti da Figma; le curve (easeOut per l'opacità, [0.22,1,0.36,1]
+// per i movimenti) sono le stesse del file sorgente.
+// ============================================================================
+type EntranceSpec = {
+  fadeDelay: number;
+  fadeDur: number;
+  move?: { axis: "y" | "x" | "scale"; from: number; delay: number; duration: number };
+};
+
+const ENTRANCE = {
+  eyebrow: { fadeDelay: 0, fadeDur: 360, move: { axis: "y", from: 30, delay: 0, duration: 600 } },
+  bigTitle: { fadeDelay: 150, fadeDur: 420, move: { axis: "y", from: 50, delay: 150, duration: 700 } },
+  description: { fadeDelay: 400, fadeDur: 360, move: { axis: "y", from: 30, delay: 400, duration: 600 } },
+  centerPlayer: { fadeDelay: 250, fadeDur: 450, move: { axis: "scale", from: 0.92, delay: 250, duration: 600 } },
+  rightShort: { fadeDelay: 450, fadeDur: 450, move: { axis: "x", from: 40, delay: 450, duration: 550 } },
+  pipelineDivider: { fadeDelay: 900, fadeDur: 400 },
+  step0: { fadeDelay: 1000, fadeDur: 350, move: { axis: "y", from: 12, delay: 1000, duration: 400 } },
+  step1: { fadeDelay: 1080, fadeDur: 350, move: { axis: "y", from: 12, delay: 1080, duration: 400 } },
+  step2: { fadeDelay: 1160, fadeDur: 350, move: { axis: "y", from: 12, delay: 1160, duration: 400 } },
+  step3: { fadeDelay: 1240, fadeDur: 350, move: { axis: "y", from: 12, delay: 1240, duration: 400 } },
+  step4: { fadeDelay: 1320, fadeDur: 350, move: { axis: "y", from: 12, delay: 1320, duration: 400 } },
+  step5: { fadeDelay: 1400, fadeDur: 350, move: { axis: "y", from: 12, delay: 1400, duration: 400 } },
+  directorEyebrow: { fadeDelay: 1300, fadeDur: 400, move: { axis: "y", from: 40, delay: 1300, duration: 550 } },
+  scoreDisplay: { fadeDelay: 1500, fadeDur: 400, move: { axis: "scale", from: 0.85, delay: 1500, duration: 600 } },
+  metricHook: { fadeDelay: 1400, fadeDur: 400, move: { axis: "x", from: -30, delay: 1400, duration: 500 } },
+  metricRetention: { fadeDelay: 1500, fadeDur: 400, move: { axis: "x", from: -30, delay: 1500, duration: 500 } },
+  metricEmotion: { fadeDelay: 1600, fadeDur: 400, move: { axis: "x", from: -30, delay: 1600, duration: 500 } },
+  metricClarity: { fadeDelay: 1700, fadeDur: 400, move: { axis: "x", from: -30, delay: 1700, duration: 500 } },
+  metricPayoff: { fadeDelay: 1800, fadeDur: 400, move: { axis: "x", from: -30, delay: 1800, duration: 500 } },
+  directorsNote: { fadeDelay: 2000, fadeDur: 500, move: { axis: "y", from: 25, delay: 2000, duration: 600 } },
+  storyArc: { fadeDelay: 2300, fadeDur: 500 },
+} as const satisfies Record<string, EntranceSpec>;
+
+// Prima che la sezione entri in vista: stato "0%" del keyframe, fermo (niente
+// animazione ancora avviata, così non c'è nessun flash a piena opacità).
+// Una volta "active", applica le due animazioni (fade + eventuale
+// movimento) con i delay/durate/curve calcolati sopra, una sola volta
+// (animation-fill-mode "both" mantiene lo stato finale).
+function entranceStyle(spec: EntranceSpec, active: boolean): CSSProperties {
+  if (!active) {
+    const transform = !spec.move
+      ? undefined
+      : spec.move.axis === "scale"
+        ? `scale(${spec.move.from})`
+        : spec.move.axis === "y"
+          ? `translateY(${spec.move.from}px)`
+          : `translateX(${spec.move.from}px)`;
+    return { opacity: 0, transform };
+  }
+  const animations = [`v-fade ${spec.fadeDur}ms cubic-bezier(0,0,0.58,1) ${spec.fadeDelay}ms both`];
+  const vars: Record<string, string> = {};
+  if (spec.move) {
+    const keyframe =
+      spec.move.axis === "y" ? "v-slide-y" : spec.move.axis === "x" ? "v-slide-x" : "v-scale-in";
+    animations.push(`${keyframe} ${spec.move.duration}ms cubic-bezier(0.22,1,0.36,1) ${spec.move.delay}ms both`);
+    vars["--v-from"] = spec.move.axis === "scale" ? `${spec.move.from}` : `${spec.move.from}px`;
+  }
+  return { animation: animations.join(", "), ...(vars as CSSProperties) };
+}
 
 function Media({
   asset,
@@ -111,6 +179,27 @@ export default function Landing() {
   const [activeStep, setActiveStep] = useState(2);
   const scoresRef = useRef<HTMLUListElement>(null);
   const [scoresRevealed, setScoresRevealed] = useState(false);
+  const [entrancePlayed, setEntrancePlayed] = useState(false);
+
+  // La coreografia di ingresso (hero+director) parte una sola volta, non
+  // appena la sezione inizia a entrare in vista.
+  useEffect(() => {
+    const el = pipelineScopeRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            setEntrancePlayed(true);
+            io.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.01 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
 
   // La pipeline (Source → ... → Final cut) avanza con lo scroll attraverso
   // hero + director.
@@ -183,6 +272,12 @@ export default function Landing() {
         @keyframes v-tag-in { to { opacity: 1; } }
         @keyframes v-drift { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 
+        /* Coreografia di ingresso hero+director (da Figma, vedi ENTRANCE) */
+        @keyframes v-fade { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes v-slide-y { from { transform: translateY(var(--v-from, 0)); } to { transform: translateY(0); } }
+        @keyframes v-slide-x { from { transform: translateX(var(--v-from, 0)); } to { transform: translateX(0); } }
+        @keyframes v-scale-in { from { transform: scale(var(--v-from, 1)); } to { transform: scale(1); } }
+
         .v-scope .v-scan-el { animation: v-scan 5.5s linear infinite; }
         .v-scope .v-pulse-el { animation: v-pulse 2.8s ease-in-out infinite; }
         .v-scope .v-reveal-el { opacity: 0; animation: v-reveal .7s cubic-bezier(.22,1,.36,1) both; animation-delay: var(--v-delay, 0ms); }
@@ -205,8 +300,9 @@ export default function Landing() {
         .v-scope .v-gradient-tab:hover::after, .v-scope .v-gradient-tab[data-active="true"]::after { transform: scaleX(1); }
 
         @media (prefers-reduced-motion: reduce) {
-          .v-scope .v-scan-el, .v-scope .v-pulse-el, .v-scope .v-reveal-el, .v-scope .v-gradient-word, .v-scope .v-tag-el {
-            animation: none; opacity: 1;
+          .v-scope .v-scan-el, .v-scope .v-pulse-el, .v-scope .v-reveal-el, .v-scope .v-gradient-word,
+          .v-scope .v-tag-el, .v-scope .v-anim {
+            animation: none !important; opacity: 1 !important; transform: none !important;
           }
         }
       `}</style>
@@ -275,25 +371,32 @@ export default function Landing() {
         <section id="studio" className="mx-auto max-w-[1600px] px-4 pb-16 pt-10 sm:px-7 lg:px-10 lg:pt-16">
           <div className="grid items-end gap-10 lg:grid-cols-[0.62fr_1.9fr]">
             <div className="relative z-10 lg:pb-12">
-              <p className="v-reveal-el v-mono text-[10px] uppercase tracking-[0.28em] text-[var(--v-primary)]" style={{ "--v-delay": "50ms" } as CSSProperties}>
+              <p
+                className="v-anim v-mono text-[10px] uppercase tracking-[0.28em] text-[var(--v-primary)]"
+                style={entranceStyle(ENTRANCE.eyebrow, entrancePlayed)}
+              >
                 Live analysis / source 01
               </p>
               <h1
-                className="v-reveal-el mt-6 text-6xl font-black uppercase leading-[0.8] tracking-[-0.02em] sm:text-8xl lg:text-[7.5rem]"
-                style={{ "--v-delay": "150ms" } as CSSProperties}
+                className="v-anim mt-6 text-6xl font-black uppercase leading-[0.8] tracking-[-0.02em] sm:text-8xl lg:text-[7.5rem]"
+                style={entranceStyle(ENTRANCE.bigTitle, entrancePlayed)}
               >
                 Find<br />
                 <span className="v-display text-[0.78em] font-normal normal-case italic tracking-tight">the</span>
                 <br />
                 <span className="v-gradient-word">moment.</span>
               </h1>
+              {/* Copy + tag animano insieme, come un unico blocco in Figma (description-box) */}
               <p
-                className="v-reveal-el mt-8 max-w-xs text-sm leading-relaxed text-[var(--v-fg-muted)]"
-                style={{ "--v-delay": "250ms" } as CSSProperties}
+                className="v-anim mt-8 max-w-xs text-sm leading-relaxed text-[var(--v-fg-muted)]"
+                style={entranceStyle(ENTRANCE.description, entrancePlayed)}
               >
                 Upload a long video. The Director watches it, finds the best moments and builds the Shorts.
               </p>
-              <div className="v-reveal-el mt-8 flex items-center gap-3" style={{ "--v-delay": "350ms" } as CSSProperties}>
+              <div
+                className="v-anim mt-8 flex items-center gap-3"
+                style={entranceStyle(ENTRANCE.description, entrancePlayed)}
+              >
                 <span className="h-px w-14 bg-gradient-to-r from-[var(--v-primary)] to-[var(--v-accent)]" />
                 <span className="v-mono text-[10px] uppercase tracking-[0.2em] text-[var(--v-fg-muted)]">
                   The director is watching
@@ -305,7 +408,7 @@ export default function Landing() {
               <div className="absolute -inset-10 -z-10 bg-[radial-gradient(circle_at_62%_40%,rgba(255,45,149,0.16),transparent_60%)]" />
               <div className="grid items-center gap-6 lg:grid-cols-[1.75fr_auto_0.62fr]">
                 {/* Source */}
-                <figure className="relative">
+                <figure className="v-anim relative" style={entranceStyle(ENTRANCE.centerPlayer, entrancePlayed)}>
                   <div className="relative aspect-video overflow-hidden rounded-lg border border-[var(--v-border)] bg-[var(--v-surface)] p-[1.5px]">
                     <div className="relative h-full overflow-hidden rounded-[7px] bg-[var(--v-surface)]">
                       <Media
@@ -348,7 +451,10 @@ export default function Landing() {
                 </div>
 
                 {/* Short */}
-                <figure className="relative mx-auto w-40 sm:w-48 lg:w-full">
+                <figure
+                  className="v-anim relative mx-auto w-40 sm:w-48 lg:w-full"
+                  style={entranceStyle(ENTRANCE.rightShort, entrancePlayed)}
+                >
                   <div className="relative aspect-[9/16] overflow-hidden rounded-lg border border-[var(--v-primary)]/40 bg-[var(--v-surface)]">
                     <Media
                       asset={ASSETS.finalCut}
@@ -369,13 +475,19 @@ export default function Landing() {
                 </figure>
               </div>
 
-              {/* System pipeline indicators — avanza con lo scroll */}
-              <ul className="v-mono mt-8 flex flex-wrap items-center gap-x-5 gap-y-3 border-t border-[var(--v-border)] pt-5 text-[9px] uppercase tracking-[0.18em] text-[var(--v-fg-muted)]">
+              {/* Linea divisoria, animata separatamente (Figma: nodo "Line") */}
+              <div
+                className="v-anim mt-8 h-px bg-[var(--v-border)]"
+                style={entranceStyle(ENTRANCE.pipelineDivider, entrancePlayed)}
+              />
+
+              {/* System pipeline indicators — ingresso scaglionato + avanzamento con lo scroll */}
+              <ul className="v-mono mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 text-[9px] uppercase tracking-[0.18em] text-[var(--v-fg-muted)]">
                 {pipeline.map((step, index) => (
                   <li
                     key={step}
-                    className={`v-reveal-el flex items-center gap-2 transition-colors duration-300 ${index === activeStep ? "text-[var(--v-fg)]" : ""}`}
-                    style={{ "--v-delay": `${index * 70}ms` } as CSSProperties}
+                    className={`v-anim flex items-center gap-2 transition-colors duration-300 ${index === activeStep ? "text-[var(--v-fg)]" : ""}`}
+                    style={entranceStyle(ENTRANCE[pipelineEntranceKeys[index]], entrancePlayed)}
                   >
                     <span
                       className={`size-1 rounded-full transition-colors duration-300 ${index <= activeStep ? "bg-gradient-to-r from-[var(--v-primary)] to-[var(--v-accent)]" : "bg-[var(--v-fg-muted)]/40"}`}
@@ -392,13 +504,19 @@ export default function Landing() {
         <section id="director" className="mx-auto max-w-[1600px] px-4 py-16 sm:px-7 lg:px-10">
           <div className="grid gap-12 border-t border-[var(--v-border)] pt-10 lg:grid-cols-[0.9fr_1.1fr]">
             <div>
-              <p className="v-mono text-[10px] uppercase tracking-[0.28em] text-[var(--v-primary)]">The director</p>
-              <h2 className="mt-4 text-4xl font-black uppercase leading-[0.86] tracking-[-0.02em] sm:text-6xl">
-                The director<br />
-                <span className="v-display text-[0.88em] font-normal normal-case italic tracking-tight">is</span>{" "}
-                <span className="v-gradient-word">watching.</span>
-              </h2>
-              <div className="mt-10 flex items-end gap-6">
+              {/* Eyebrow + titolo animano insieme, come un unico blocco in Figma (director-eyebrow) */}
+              <div className="v-anim" style={entranceStyle(ENTRANCE.directorEyebrow, entrancePlayed)}>
+                <p className="v-mono text-[10px] uppercase tracking-[0.28em] text-[var(--v-primary)]">The director</p>
+                <h2 className="mt-4 text-4xl font-black uppercase leading-[0.86] tracking-[-0.02em] sm:text-6xl">
+                  The director<br />
+                  <span className="v-display text-[0.88em] font-normal normal-case italic tracking-tight">is</span>{" "}
+                  <span className="v-gradient-word">watching.</span>
+                </h2>
+              </div>
+              <div
+                className="v-anim mt-10 flex items-end gap-6"
+                style={entranceStyle(ENTRANCE.scoreDisplay, entrancePlayed)}
+              >
                 <div>
                   <p className="v-mono text-[10px] uppercase tracking-[0.2em] text-[var(--v-fg-muted)]">Attention</p>
                   <p className="v-gradient-word mt-2 text-[6rem] font-black leading-none tracking-[-0.04em] sm:text-[8rem]">94</p>
@@ -413,7 +531,11 @@ export default function Landing() {
             <div className="lg:pl-10">
               <ul ref={scoresRef} className="divide-y divide-[var(--v-border)] border-y border-[var(--v-border)]">
                 {scores.map((s) => (
-                  <li key={s.label} className="flex items-center gap-5 py-4">
+                  <li
+                    key={s.label}
+                    className="v-anim flex items-center gap-5 py-4"
+                    style={entranceStyle(ENTRANCE[s.entranceKey], entrancePlayed)}
+                  >
                     <span className="v-mono w-24 text-[10px] uppercase tracking-[0.2em] text-[var(--v-fg-muted)]">
                       {s.label}
                     </span>
@@ -428,7 +550,10 @@ export default function Landing() {
                 ))}
               </ul>
 
-              <figure className="mt-8 border-l border-[var(--v-primary)]/50 pl-5">
+              <figure
+                className="v-anim mt-8 border-l border-[var(--v-primary)]/50 pl-5"
+                style={entranceStyle(ENTRANCE.directorsNote, entrancePlayed)}
+              >
                 <figcaption className="v-mono text-[10px] uppercase tracking-[0.2em] text-[var(--v-primary)]">
                   Director&rsquo;s note
                 </figcaption>
@@ -437,7 +562,10 @@ export default function Landing() {
                 </blockquote>
               </figure>
 
-              <div className="mt-10 border-t border-[var(--v-border)] pt-6">
+              <div
+                className="v-anim mt-10 border-t border-[var(--v-border)] pt-6"
+                style={entranceStyle(ENTRANCE.storyArc, entrancePlayed)}
+              >
                 <div className="relative h-px bg-[var(--v-border)]">
                   <div className="absolute inset-y-0 left-0 w-[42%] bg-gradient-to-r from-[var(--v-primary)] to-[var(--v-accent)]" />
                   {[8, 28, 47, 69, 90].map((pos, i) => (
