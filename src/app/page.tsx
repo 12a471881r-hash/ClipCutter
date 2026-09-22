@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type DragEvent } from "react";
 import Link from "next/link";
-import { Menu, Plus, Sparkles, X } from "lucide-react";
+import { ArrowRight, Film, Menu, Plus, Sparkles, UploadCloud, WandSparkles, X } from "lucide-react";
 
 // ============================================================================
 // Landing "/" — Vantage / Director.
@@ -29,7 +29,6 @@ const ASSETS = {
 };
 
 const pipeline = ["Source", "Analyzing", "Hook found", "Building story", "Directing", "Final cut"];
-const pipelineEntranceKeys = ["step0", "step1", "step2", "step3", "step4", "step5"] as const;
 
 const scores = [
   { label: "Hook", value: 98, entranceKey: "metricHook" },
@@ -66,12 +65,6 @@ const modes = [
 const markers = ["Hook", "Context", "Peak", "Payoff", "Loop"];
 const cutsGrid = ["Hook", "Context", "Peak", "Payoff", "Loop", "Alt cut"];
 
-const heroTags: { label: string; className: string; delay: string; hideOnSmall?: boolean }[] = [
-  { label: "Hook / detected", className: "left-[6%] top-[18%]", delay: "500ms" },
-  { label: "Peak / reviewing", className: "right-[8%] top-[38%]", delay: "1100ms", hideOnSmall: true },
-  { label: "Retention / pending", className: "bottom-[20%] left-[10%]", delay: "1700ms", hideOnSmall: true },
-];
-
 // ============================================================================
 // ENTRANCE — coreografia di ingresso hero+director, portata da Figma
 // (get_motion_context sul nodo 6:4, file 7SxZVLXI764peF6aPyUwbm).
@@ -92,15 +85,6 @@ const ENTRANCE = {
   eyebrow: { fadeDelay: 0, fadeDur: 360, move: { axis: "y", from: 30, delay: 0, duration: 600 } },
   bigTitle: { fadeDelay: 150, fadeDur: 420, move: { axis: "y", from: 50, delay: 150, duration: 700 } },
   description: { fadeDelay: 400, fadeDur: 360, move: { axis: "y", from: 30, delay: 400, duration: 600 } },
-  centerPlayer: { fadeDelay: 250, fadeDur: 450, move: { axis: "scale", from: 0.92, delay: 250, duration: 600 } },
-  rightShort: { fadeDelay: 450, fadeDur: 450, move: { axis: "x", from: 40, delay: 450, duration: 550 } },
-  pipelineDivider: { fadeDelay: 900, fadeDur: 400 },
-  step0: { fadeDelay: 1000, fadeDur: 350, move: { axis: "y", from: 12, delay: 1000, duration: 400 } },
-  step1: { fadeDelay: 1080, fadeDur: 350, move: { axis: "y", from: 12, delay: 1080, duration: 400 } },
-  step2: { fadeDelay: 1160, fadeDur: 350, move: { axis: "y", from: 12, delay: 1160, duration: 400 } },
-  step3: { fadeDelay: 1240, fadeDur: 350, move: { axis: "y", from: 12, delay: 1240, duration: 400 } },
-  step4: { fadeDelay: 1320, fadeDur: 350, move: { axis: "y", from: 12, delay: 1320, duration: 400 } },
-  step5: { fadeDelay: 1400, fadeDur: 350, move: { axis: "y", from: 12, delay: 1400, duration: 400 } },
   directorEyebrow: { fadeDelay: 1300, fadeDur: 400, move: { axis: "y", from: 40, delay: 1300, duration: 550 } },
   scoreDisplay: { fadeDelay: 1500, fadeDur: 400, move: { axis: "scale", from: 0.85, delay: 1500, duration: 600 } },
   metricHook: { fadeDelay: 1400, fadeDur: 400, move: { axis: "x", from: -30, delay: 1400, duration: 500 } },
@@ -176,10 +160,69 @@ const vantageVars = {
 export default function Landing() {
   const [menuOpen, setMenuOpen] = useState(false);
   const pipelineScopeRef = useRef<HTMLDivElement>(null);
-  const [activeStep, setActiveStep] = useState(2);
   const scoresRef = useRef<HTMLUListElement>(null);
   const [scoresRevealed, setScoresRevealed] = useState(false);
   const [entrancePlayed, setEntrancePlayed] = useState(false);
+
+  // Dropzone interattiva: upload reale (solo anteprima locale, via blob URL —
+  // questa landing non carica nulla su alcun backend, è una demo) o "Carica
+  // demo" con l'asset placeholder. isTransitioning pilota l'animazione di
+  // uscita della dropzone prima di mostrare la vista "analisi".
+  const [isDragging, setIsDragging] = useState(false);
+  const [analysisActive, setAnalysisActive] = useState(false);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  const [sourceName, setSourceName] = useState("DEMO_SOURCE.MOV");
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Rilascia l'object URL creato per l'anteprima quando il componente si
+  // smonta, oltre che ogni volta che ne viene creato uno nuovo (sotto).
+  useEffect(() => {
+    return () => {
+      if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- solo cleanup all'unmount
+  }, []);
+
+  const startAnalysis = (file?: File) => {
+    if (file && file.size > 2 * 1024 * 1024 * 1024) {
+      setUploadError("File too large. Maximum size is 2GB.");
+      return;
+    }
+    if (file && !file.type.startsWith("video/")) {
+      setUploadError("Choose an MP4 or MOV video file.");
+      return;
+    }
+
+    setUploadError("");
+    if (file) {
+      if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+      setSourceUrl(URL.createObjectURL(file));
+      setSourceName(file.name);
+    } else {
+      if (sourceUrl) URL.revokeObjectURL(sourceUrl);
+      setSourceUrl(null);
+      setSourceName("DEMO_SOURCE.MOV");
+    }
+    setIsTransitioning(true);
+    window.setTimeout(() => {
+      setAnalysisActive(true);
+      setIsTransitioning(false);
+    }, 420);
+  };
+
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) startAnalysis(file);
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+    const file = event.dataTransfer.files?.[0];
+    if (file) startAnalysis(file);
+  };
 
   // La coreografia di ingresso (hero+director) parte una sola volta, non
   // appena la sezione inizia a entrare in vista.
@@ -199,38 +242,6 @@ export default function Landing() {
     );
     io.observe(el);
     return () => io.disconnect();
-  }, []);
-
-  // La pipeline (Source → ... → Final cut) avanza con lo scroll attraverso
-  // hero + director.
-  useEffect(() => {
-    const el = pipelineScopeRef.current;
-    if (!el) return;
-    let ticking = false;
-    const update = () => {
-      const rect = el.getBoundingClientRect();
-      const vh = window.innerHeight;
-      const total = rect.height + vh * 0.5;
-      const passed = vh - rect.top;
-      const progress = Math.min(1, Math.max(0, passed / total));
-      setActiveStep(Math.min(pipeline.length - 1, Math.floor(progress * pipeline.length)));
-    };
-    const onScroll = () => {
-      if (!ticking) {
-        requestAnimationFrame(() => {
-          update();
-          ticking = false;
-        });
-        ticking = true;
-      }
-    };
-    update();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", update);
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", update);
-    };
   }, []);
 
   // Le score bar si riempiono una sola volta, quando entrano in vista.
@@ -278,6 +289,53 @@ export default function Landing() {
         @keyframes v-slide-x { from { transform: translateX(var(--v-from, 0)); } to { transform: translateX(0); } }
         @keyframes v-scale-in { from { transform: scale(var(--v-from, 1)); } to { transform: scale(1); } }
 
+        /* Headline parola-per-parola + dropzone interattiva + vista analisi */
+        @keyframes v-headline-word-reveal { from { opacity: 0; transform: translate3d(0, 0.42em, 0) rotateX(-14deg); } to { opacity: 1; transform: translate3d(0, 0, 0) rotateX(0); } }
+        @keyframes v-vertical-scan { 0% { transform: translateY(-1px); opacity: 0; } 15%,85% { opacity: .85; } 100% { transform: translateY(340px); opacity: 0; } }
+        @keyframes v-upload-exit { from { opacity: 1; transform: translate3d(0,0,0) scale(1); } to { opacity: 0; transform: translate3d(0,-8px,0) scale(.985); } }
+        @keyframes v-analysis-enter { from { opacity: 0; transform: translate3d(0,16px,0) scale(.985); } to { opacity: 1; transform: translate3d(0,0,0) scale(1); } }
+        @keyframes v-analysis-piece-enter { from { opacity: 0; transform: translate3d(var(--v-piece-x, 0), 12px, 0) scale(.985); } to { opacity: 1; transform: translate3d(0,0,0) scale(1); } }
+
+        .v-scope .v-headline-word { transform-origin: 50% 100%; backface-visibility: hidden; animation: v-headline-word-reveal .95s cubic-bezier(.16,1,.3,1) both; animation-delay: var(--v-word-delay, 0ms); }
+        .v-scope .v-vertical-scan { animation: v-vertical-scan 4.2s cubic-bezier(.4,0,.2,1) infinite; box-shadow: 0 0 22px var(--v-primary); }
+        .v-scope .v-upload-exit { animation: v-upload-exit .42s cubic-bezier(.4,0,.2,1) both; will-change: transform, opacity; }
+        .v-scope .v-analysis-enter { animation: v-analysis-enter .8s cubic-bezier(.16,1,.3,1) both; will-change: transform, opacity; }
+        .v-scope .v-analysis-source-enter { --v-piece-x: -12px; animation: v-analysis-piece-enter .75s .08s cubic-bezier(.16,1,.3,1) both; }
+        .v-scope .v-analysis-connector-enter { animation: v-analysis-piece-enter .65s .22s cubic-bezier(.16,1,.3,1) both; }
+        .v-scope .v-analysis-short-enter { --v-piece-x: 12px; animation: v-analysis-piece-enter .75s .3s cubic-bezier(.16,1,.3,1) both; }
+        .v-scope .v-analysis-pipeline-enter { animation: v-analysis-piece-enter .7s .42s cubic-bezier(.16,1,.3,1) both; }
+        .v-scope .v-upload-grid {
+          background-image: linear-gradient(var(--v-border) 1px, transparent 1px), linear-gradient(90deg, var(--v-border) 1px, transparent 1px);
+          background-size: 42px 42px;
+          mask-image: radial-gradient(circle at center, black, transparent 78%);
+        }
+        .v-scope .v-upload-zone {
+          box-shadow: inset 0 0 55px color-mix(in oklab, var(--v-bg) 65%, transparent);
+          will-change: transform, opacity;
+        }
+        .v-scope .v-upload-zone::after {
+          content: ""; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none;
+          background: linear-gradient(115deg, transparent 20%, var(--v-primary), var(--v-accent), transparent 80%) border-box;
+          border: 1px solid transparent;
+          mask: linear-gradient(black 0 0) padding-box, linear-gradient(black 0 0);
+          mask-composite: exclude;
+          opacity: 0.18;
+          transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .v-scope .v-upload-zone:hover::after, .v-scope .v-upload-zone[data-dragging="true"]::after { opacity: 0.62; }
+        .v-scope .v-upload-zone[data-dragging="true"] {
+          transform: scale(1.01);
+          box-shadow: 0 0 42px color-mix(in oklab, var(--v-primary) 18%, transparent), inset 0 0 55px color-mix(in oklab, var(--v-primary) 6%, transparent);
+        }
+        .v-scope .v-cinematic-shimmer { position: relative; isolation: isolate; }
+        .v-scope .v-cinematic-shimmer::after {
+          content: attr(data-text); position: absolute; inset: 0;
+          background-image: linear-gradient(100deg, transparent 36%, color-mix(in oklab, var(--v-fg) 72%, transparent) 50%, transparent 64%);
+          background-clip: text; -webkit-background-clip: text; color: transparent; pointer-events: none; opacity: 0;
+          animation: v-shift 7.5s 1.4s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+          will-change: transform, opacity;
+        }
+
         .v-scope .v-scan-el { animation: v-scan 5.5s linear infinite; }
         .v-scope .v-pulse-el { animation: v-pulse 2.8s ease-in-out infinite; }
         .v-scope .v-reveal-el { opacity: 0; animation: v-reveal .7s cubic-bezier(.22,1,.36,1) both; animation-delay: var(--v-delay, 0ms); }
@@ -301,7 +359,10 @@ export default function Landing() {
 
         @media (prefers-reduced-motion: reduce) {
           .v-scope .v-scan-el, .v-scope .v-pulse-el, .v-scope .v-reveal-el, .v-scope .v-gradient-word,
-          .v-scope .v-tag-el, .v-scope .v-anim {
+          .v-scope .v-tag-el, .v-scope .v-anim, .v-scope .v-headline-word, .v-scope .v-vertical-scan,
+          .v-scope .v-upload-exit, .v-scope .v-analysis-enter, .v-scope .v-analysis-source-enter,
+          .v-scope .v-analysis-connector-enter, .v-scope .v-analysis-short-enter, .v-scope .v-analysis-pipeline-enter,
+          .v-scope .v-cinematic-shimmer::after {
             animation: none !important; opacity: 1 !important; transform: none !important;
           }
         }
@@ -368,134 +429,196 @@ export default function Landing() {
 
       {/* HERO — source video becomes a vertical short */}
       <div ref={pipelineScopeRef}>
-        <section id="studio" className="mx-auto max-w-[1600px] px-4 pb-16 pt-10 sm:px-7 lg:px-10 lg:pt-16">
-          <div className="grid items-end gap-10 lg:grid-cols-[0.62fr_1.9fr]">
-            <div className="relative z-10 lg:pb-12">
+        <section id="studio" className="mx-auto min-h-[calc(100svh-4rem)] max-w-[1600px] px-4 pb-14 pt-10 sm:px-7 lg:px-10 lg:pt-14">
+          <div className="grid items-center gap-12 lg:grid-cols-[0.82fr_1.18fr] lg:gap-16">
+            <div className="relative z-10">
               <p
                 className="v-anim v-mono text-[10px] uppercase tracking-[0.28em] text-[var(--v-primary)]"
                 style={entranceStyle(ENTRANCE.eyebrow, entrancePlayed)}
               >
-                Live analysis / source 01
+                AI video director / studio 01
               </p>
-              <h1
-                className="v-anim mt-6 text-6xl font-black uppercase leading-[0.8] tracking-[-0.02em] sm:text-8xl lg:text-[7.5rem]"
-                style={entranceStyle(ENTRANCE.bigTitle, entrancePlayed)}
-              >
-                Find<br />
-                <span className="v-display text-[0.78em] font-normal normal-case italic tracking-tight">the</span>
-                <br />
-                <span className="v-gradient-word">moment.</span>
+              <h1 className="mt-6 uppercase leading-[0.82]" aria-label="Find the moment.">
+                <span className="block text-5xl font-black sm:text-7xl lg:text-[6.4rem]" aria-hidden="true">
+                  {["Find", "the"].map((word, index) => (
+                    <span
+                      key={word}
+                      className="v-headline-word mr-[0.22em] inline-block last:mr-0"
+                      style={{ "--v-word-delay": `${index * 75}ms` } as CSSProperties}
+                    >
+                      {word}
+                    </span>
+                  ))}
+                </span>
+                <span className="mt-1 block text-6xl font-black sm:text-8xl lg:text-[7.6rem]" aria-hidden="true">
+                  <span
+                    className="v-gradient-word v-cinematic-shimmer v-headline-word inline-block"
+                    data-text="moment."
+                    style={{ "--v-word-delay": "230ms" } as CSSProperties}
+                  >
+                    moment.
+                  </span>
+                </span>
               </h1>
-              {/* Copy + tag animano insieme, come un unico blocco in Figma (description-box) */}
               <p
-                className="v-anim mt-8 max-w-xs text-sm leading-relaxed text-[var(--v-fg-muted)]"
+                className="v-anim mt-8 max-w-lg text-sm leading-relaxed text-[var(--v-fg-muted)] sm:text-base"
                 style={entranceStyle(ENTRANCE.description, entrancePlayed)}
               >
                 Upload a long video. The Director watches it, finds the best moments and builds the Shorts.
               </p>
-              <div
-                className="v-anim mt-8 flex items-center gap-3"
-                style={entranceStyle(ENTRANCE.description, entrancePlayed)}
-              >
+              <div className="v-mono mt-8 flex items-center gap-3 text-[9px] uppercase tracking-[0.2em] text-[var(--v-fg-muted)]">
                 <span className="h-px w-14 bg-gradient-to-r from-[var(--v-primary)] to-[var(--v-accent)]" />
-                <span className="v-mono text-[10px] uppercase tracking-[0.2em] text-[var(--v-fg-muted)]">
-                  The director is watching
-                </span>
+                {analysisActive ? "The director is watching" : "Ready for source"}
               </div>
             </div>
 
-            <div className="relative">
-              <div className="absolute -inset-10 -z-10 bg-[radial-gradient(circle_at_62%_40%,rgba(255,45,149,0.16),transparent_60%)]" />
-              <div className="grid items-center gap-6 lg:grid-cols-[1.75fr_auto_0.62fr]">
-                {/* Source */}
-                <figure className="v-anim relative" style={entranceStyle(ENTRANCE.centerPlayer, entrancePlayed)}>
-                  <div className="relative aspect-video overflow-hidden rounded-lg border border-[var(--v-border)] bg-[var(--v-surface)] p-[1.5px]">
-                    <div className="relative h-full overflow-hidden rounded-[7px] bg-[var(--v-surface)]">
-                      <Media
-                        asset={ASSETS.hero}
-                        alt="Director reviewing long-form footage in a dark editing studio"
-                        className="h-full w-full object-cover"
-                      />
-                      <div className="absolute inset-x-0 top-0 h-px overflow-hidden">
-                        <div className="v-scan-el h-full w-1/3 bg-gradient-to-r from-transparent via-[var(--v-primary)] to-[var(--v-accent)]" />
-                      </div>
-                      <div className="v-mono absolute left-3 top-3 flex items-center gap-2 rounded-full border border-[var(--v-border-strong)] bg-[var(--v-bg)]/75 py-1 pl-2.5 pr-3 text-[9px] uppercase tracking-[0.16em] backdrop-blur-sm">
-                        <span className="v-pulse-el size-1.5 rounded-full bg-gradient-to-r from-[var(--v-primary)] to-[var(--v-accent)]" />
-                        source / 58:00
-                      </div>
-                      <div className="v-mono absolute bottom-3 right-3 text-[9px] uppercase text-[var(--v-fg)]/70">
-                        00:42:17 / 00:58:00
-                      </div>
-                      {heroTags.map((tag) => (
-                        <span
-                          key={tag.label}
-                          className={`v-tag-el v-mono pointer-events-none absolute flex items-center gap-1.5 rounded-full border border-[var(--v-border-strong)] bg-[var(--v-bg)]/70 px-2.5 py-1 text-[9px] uppercase tracking-[0.08em] backdrop-blur-sm ${tag.className} ${tag.hideOnSmall ? "hidden sm:flex" : ""}`}
-                          style={{ "--v-delay": tag.delay } as CSSProperties}
-                        >
-                          <span className="size-1 rounded-full bg-gradient-to-r from-[var(--v-primary)] to-[var(--v-accent)]" />
-                          {tag.label}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="absolute inset-0 -z-10 rounded-lg bg-gradient-to-br from-[var(--v-primary)] via-[var(--v-primary)]/30 to-[var(--v-accent)] opacity-40" />
-                  </div>
-                  <figcaption className="v-mono mt-3 text-[9px] uppercase tracking-[0.2em] text-[var(--v-fg-muted)]">
-                    Original video
-                  </figcaption>
-                </figure>
-
-                <div className="hidden flex-col items-center gap-2 lg:flex">
-                  <span className="h-10 w-px bg-gradient-to-b from-transparent to-[var(--v-primary)]" />
-                  <span className="text-[var(--v-accent)]">→</span>
-                  <span className="h-10 w-px bg-gradient-to-t from-transparent to-[var(--v-accent)]" />
-                </div>
-
-                {/* Short */}
-                <figure
-                  className="v-anim relative mx-auto w-40 sm:w-48 lg:w-full"
-                  style={entranceStyle(ENTRANCE.rightShort, entrancePlayed)}
+            <div className="relative min-h-[420px] sm:min-h-[500px]">
+              <div className="absolute -inset-8 -z-10 bg-[radial-gradient(circle_at_50%_45%,rgba(255,45,149,0.16),transparent_62%)]" />
+              {!analysisActive ? (
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Upload a video by dragging it here or selecting a file"
+                  onClick={() => fileInputRef.current?.click()}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") fileInputRef.current?.click();
+                  }}
+                  onDragEnter={(event) => {
+                    event.preventDefault();
+                    setIsDragging(true);
+                  }}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDragging(false);
+                  }}
+                  onDrop={handleDrop}
+                  data-dragging={isDragging}
+                  className={`v-upload-zone group relative flex min-h-[420px] cursor-pointer flex-col items-center justify-center overflow-hidden rounded-lg border border-[var(--v-border)] bg-[var(--v-surface)]/65 px-6 text-center backdrop-blur-md transition-[transform,opacity,border-color] duration-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--v-primary)] data-[dragging=true]:border-[var(--v-primary)] sm:min-h-[500px] ${isTransitioning ? "v-upload-exit pointer-events-none" : ""}`}
                 >
-                  <div className="relative aspect-[9/16] overflow-hidden rounded-lg border border-[var(--v-primary)]/40 bg-[var(--v-surface)]">
-                    <Media
-                      asset={ASSETS.finalCut}
-                      alt="Vertical short cut generated from the original footage"
-                      className="h-full w-full scale-[1.6] object-cover object-[62%_38%]"
-                    />
-                    <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-[var(--v-bg)] to-transparent" />
-                    <div className="v-mono absolute left-2 top-2 rounded-full border border-[var(--v-border-strong)] bg-[var(--v-bg)]/75 px-2 py-0.5 text-[8px] uppercase tracking-[0.16em]">
-                      final cut
-                    </div>
-                    <div className="v-mono absolute bottom-3 left-2 right-2 text-[8px] uppercase leading-relaxed text-[var(--v-fg)]/80">
-                      <span className="v-gradient-word font-sans text-[13px] font-black tracking-tight">94</span> attention
-                    </div>
+                  <div className="v-upload-grid absolute inset-0 opacity-50 transition-opacity duration-500 group-hover:opacity-80" />
+                  <div className="absolute inset-x-0 top-0 h-px overflow-hidden">
+                    <div className="v-scan-el h-full w-1/3 bg-gradient-to-r from-transparent via-[var(--v-primary)] to-[var(--v-accent)]" />
                   </div>
-                  <figcaption className="v-mono mt-3 text-[9px] uppercase tracking-[0.2em] text-[var(--v-fg-muted)]">
-                    Vertical short
-                  </figcaption>
-                </figure>
-              </div>
-
-              {/* Linea divisoria, animata separatamente (Figma: nodo "Line") */}
-              <div
-                className="v-anim mt-8 h-px bg-[var(--v-border)]"
-                style={entranceStyle(ENTRANCE.pipelineDivider, entrancePlayed)}
-              />
-
-              {/* System pipeline indicators — ingresso scaglionato + avanzamento con lo scroll */}
-              <ul className="v-mono mt-5 flex flex-wrap items-center gap-x-5 gap-y-3 text-[9px] uppercase tracking-[0.18em] text-[var(--v-fg-muted)]">
-                {pipeline.map((step, index) => (
-                  <li
-                    key={step}
-                    className={`v-anim flex items-center gap-2 transition-colors duration-300 ${index === activeStep ? "text-[var(--v-fg)]" : ""}`}
-                    style={entranceStyle(ENTRANCE[pipelineEntranceKeys[index]], entrancePlayed)}
-                  >
-                    <span
-                      className={`size-1 rounded-full transition-colors duration-300 ${index <= activeStep ? "bg-gradient-to-r from-[var(--v-primary)] to-[var(--v-accent)]" : "bg-[var(--v-fg-muted)]/40"}`}
-                    />
-                    {step}
-                  </li>
-                ))}
-              </ul>
+                  <div className="relative flex size-20 items-center justify-center rounded-full border border-[var(--v-primary)]/35 bg-[var(--v-bg)]/60 shadow-[0_0_40px_rgba(255,45,149,0.24)] transition-transform duration-500 group-hover:-translate-y-1 group-hover:scale-105">
+                    <UploadCloud className="size-8 text-[var(--v-primary)] transition-colors group-hover:text-[var(--v-accent)]" />
+                    <span className="v-pulse-el absolute inset-2 -z-10 rounded-full bg-[var(--v-primary)]/15" />
+                  </div>
+                  <p className="relative mt-7 text-2xl font-black uppercase">Drop your footage</p>
+                  <p className="v-mono relative mt-3 text-[9px] uppercase tracking-[0.2em] text-[var(--v-fg-muted)]">
+                    Drag &amp; drop / MP4, MOV &bull; max 2GB
+                  </p>
+                  <div className="relative mt-8 flex flex-wrap justify-center gap-3">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        fileInputRef.current?.click();
+                      }}
+                      className="inline-flex items-center gap-2 rounded-none border border-[var(--v-primary)]/50 bg-transparent px-6 py-2.5 font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--v-primary)] shadow-[0_0_28px_rgba(255,45,149,0.24)] transition-all hover:border-transparent hover:bg-[linear-gradient(90deg,var(--v-primary),var(--v-accent))] hover:text-[#0a0a0a]"
+                    >
+                      <Film size={14} /> Upload video
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        startAnalysis();
+                      }}
+                      className="v-mono inline-flex items-center gap-2 rounded-none border border-[var(--v-border-strong)] bg-transparent px-6 py-2.5 text-[10px] uppercase tracking-[0.16em] text-[var(--v-fg)] transition-all hover:border-transparent hover:bg-[linear-gradient(90deg,var(--v-primary),var(--v-accent))] hover:text-[#0a0a0a]"
+                    >
+                      <WandSparkles size={14} /> Try a demo
+                    </button>
+                  </div>
+                  {uploadError && <p className="relative mt-5 text-xs text-[var(--v-primary)]">{uploadError}</p>}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="video/mp4,video/quicktime,video/*"
+                    className="sr-only"
+                    onChange={handleFileChange}
+                  />
+                  <span className="v-mono absolute left-4 top-4 text-[8px] uppercase tracking-[0.18em] text-[var(--v-fg-muted)]">
+                    Input / waiting
+                  </span>
+                  <span className="v-mono absolute bottom-4 right-4 text-[8px] uppercase tracking-[0.18em] text-[var(--v-fg-muted)]">
+                    Secure local preview
+                  </span>
+                </div>
+              ) : (
+                <div className="v-analysis-enter pt-3">
+                  <div className="v-mono mb-5 flex items-center justify-between border-b border-[var(--v-border)] pb-4 text-[9px] uppercase tracking-[0.16em] text-[var(--v-fg-muted)]">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="v-pulse-el size-1.5 shrink-0 rounded-full bg-[var(--v-primary)]" />
+                      <span className="truncate">Live / {sourceName}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setAnalysisActive(false)}
+                      className="text-[9px] uppercase tracking-[0.16em] text-[var(--v-fg-muted)] transition-colors hover:text-[var(--v-fg)]"
+                    >
+                      New source
+                    </button>
+                  </div>
+                  <div className="grid items-center gap-5 sm:grid-cols-[1.75fr_auto_0.62fr]">
+                    <figure className="v-analysis-source-enter">
+                      <div className="relative aspect-video overflow-hidden rounded-lg border border-[var(--v-border)] bg-[var(--v-surface)] p-[1.5px]">
+                        <div className="relative h-full overflow-hidden rounded-[7px] bg-[var(--v-surface)]">
+                          {sourceUrl ? (
+                            <video src={sourceUrl} className="h-full w-full object-cover" autoPlay muted loop playsInline />
+                          ) : (
+                            <Media asset={ASSETS.hero} alt="Director reviewing long-form footage" className="h-full w-full object-cover" />
+                          )}
+                          <div className="v-vertical-scan absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[var(--v-primary)] to-[var(--v-accent)]" />
+                          <div className="v-mono absolute left-3 top-3 rounded-full border border-[var(--v-border-strong)] bg-[var(--v-bg)]/75 px-3 py-1 text-[8px] uppercase tracking-[0.16em] backdrop-blur-sm">
+                            Source / analyzing
+                          </div>
+                          <div className="v-mono absolute bottom-3 right-3 text-[8px] uppercase text-[var(--v-fg)]/70">00:42:17 / 00:58:00</div>
+                        </div>
+                        <div className="absolute inset-0 -z-10 rounded-lg bg-gradient-to-br from-[var(--v-primary)] via-[var(--v-primary)]/30 to-[var(--v-accent)] opacity-40" />
+                      </div>
+                      <figcaption className="v-mono mt-3 text-[8px] uppercase tracking-[0.2em] text-[var(--v-fg-muted)]">
+                        Original footage
+                      </figcaption>
+                    </figure>
+                    <div className="v-analysis-connector-enter hidden flex-col items-center gap-2 sm:flex">
+                      <span className="h-8 w-px bg-gradient-to-b from-transparent to-[var(--v-primary)]" />
+                      <ArrowRight className="size-4 text-[var(--v-accent)]" />
+                      <span className="h-8 w-px bg-gradient-to-t from-transparent to-[var(--v-accent)]" />
+                    </div>
+                    <figure className="v-analysis-short-enter mx-auto w-36 sm:w-full">
+                      <div className="relative aspect-[9/16] overflow-hidden rounded-lg border border-[var(--v-primary)]/45 bg-[var(--v-surface)]">
+                        {sourceUrl ? (
+                          <video src={sourceUrl} className="h-full w-full object-cover" autoPlay muted loop playsInline />
+                        ) : (
+                          <Media
+                            asset={ASSETS.finalCut}
+                            alt="Vertical short preview"
+                            className="h-full w-full scale-[1.6] object-cover object-[62%_38%]"
+                          />
+                        )}
+                        <div className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-[var(--v-bg)] to-transparent" />
+                        <div className="v-mono absolute left-2 top-2 rounded-full border border-[var(--v-border-strong)] bg-[var(--v-bg)]/75 px-2 py-0.5 text-[7px] uppercase">
+                          Final cut
+                        </div>
+                        <div className="v-mono absolute bottom-3 left-2 text-[7px] uppercase text-[var(--v-fg)]/80">
+                          <span className="v-gradient-word font-sans text-xl font-black">94</span> Attention
+                        </div>
+                      </div>
+                      <figcaption className="v-mono mt-3 text-[8px] uppercase tracking-[0.2em] text-[var(--v-fg-muted)]">
+                        Vertical short
+                      </figcaption>
+                    </figure>
+                  </div>
+                  <ul className="v-analysis-pipeline-enter v-mono mt-7 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-[var(--v-border)] pt-4 text-[8px] uppercase tracking-[0.16em] text-[var(--v-fg-muted)]">
+                    {pipeline.map((step, index) => (
+                      <li key={step} className={`flex items-center gap-2 ${index === 2 ? "text-[var(--v-fg)]" : ""}`}>
+                        <span className={`size-1 rounded-full ${index <= 2 ? "bg-[var(--v-primary)]" : "bg-[var(--v-fg-muted)]/40"}`} />
+                        {step}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
         </section>
